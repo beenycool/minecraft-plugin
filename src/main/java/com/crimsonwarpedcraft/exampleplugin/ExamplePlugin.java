@@ -1,8 +1,8 @@
 package com.crimsonwarpedcraft.exampleplugin;
 
+import com.crimsonwarpedcraft.exampleplugin.service.WorldResetScheduler;
 import io.papermc.lib.PaperLib;
 import org.bukkit.plugin.java.JavaPlugin;
-
 
 /**
  * Created by Levi Muniz on 7/29/20.
@@ -11,10 +11,25 @@ import org.bukkit.plugin.java.JavaPlugin;
  */
 public class ExamplePlugin extends JavaPlugin {
 
+  private WorldResetScheduler worldResetScheduler;
+
   @Override
   public void onEnable() {
     PaperLib.suggestPaper(this);
 
     saveDefaultConfig();
+    if (!getDataFolder().exists() && !getDataFolder().mkdirs()) {
+      getLogger().warning("Unable to create plugin data directory.");
+    }
+
+    worldResetScheduler = new WorldResetScheduler(this);
+    worldResetScheduler.start();
+  }
+
+  @Override
+  public void onDisable() {
+    if (worldResetScheduler != null) {
+      worldResetScheduler.cancel();
+    }
   }
 }

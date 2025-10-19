@@ -1,1 +1,15 @@
-# A journey of 1,000 lines starts with a single char
+world-reset:
+  interval-hours: 5
+  holding:
+    world: world
+    x: 0.5
+    y: 100.0
+    z: 0.5
+    yaw: 0.0
+    pitch: 0.0
+  target-worlds:
+    - name: example_world
+      template-directory: templates/example_world
+  reset-commands:
+    - "say Beginning scheduled world reset"
+    - "say World reset completed"
