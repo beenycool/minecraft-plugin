@@ -5,6 +5,7 @@ import com.crimsonwarpedcraft.exampleplugin.bridge.YouTubeChatBridge.ChatMessage
 import com.crimsonwarpedcraft.exampleplugin.bridge.YouTubeChatBridge.Registration;
 import com.crimsonwarpedcraft.exampleplugin.bridge.YouTubeChatBridge.SubscriberMilestone;
 import com.crimsonwarpedcraft.exampleplugin.bridge.YouTubeChatBridge.SubscriberNotification;
+import com.crimsonwarpedcraft.exampleplugin.service.WorldResetScheduler; // Added from codex branch
 import edu.umd.cs.findbugs.annotations.SuppressFBWarnings;
 import io.papermc.lib.PaperLib;
 import java.security.SecureRandom;
@@ -33,6 +34,10 @@ import org.bukkit.util.Vector;
  */
 public class ExamplePlugin extends JavaPlugin {
 
+  // Fields from codex branch
+  private WorldResetScheduler worldResetScheduler;
+
+  // Fields from main branch
   private YouTubeChatBridge bridge;
   private final List<Registration> registrations = new ArrayList<>();
   private final SecureRandom secureRandom = new SecureRandom();
@@ -45,6 +50,12 @@ public class ExamplePlugin extends JavaPlugin {
     PaperLib.suggestPaper(this);
 
     saveDefaultConfig();
+
+    // Logic from codex branch
+    worldResetScheduler = new WorldResetScheduler(this);
+    worldResetScheduler.start();
+
+    // Logic from main branch
     reloadBridgeSettings();
     loadSubscriberState();
 
@@ -59,12 +70,20 @@ public class ExamplePlugin extends JavaPlugin {
 
   @Override
   public void onDisable() {
+    // Logic from codex branch
+    if (worldResetScheduler != null) {
+      worldResetScheduler.cancel();
+    }
+
+    // Logic from main branch
     registrations.forEach(Registration::close);
     registrations.clear();
     bridge = null;
     knownSubscriberCount = 0L;
     lastCelebratedMilestone = 0L;
   }
+
+  // All methods below are from the main branch
 
   /** Returns the active YouTube chat bridge instance. */
   @SuppressFBWarnings(
