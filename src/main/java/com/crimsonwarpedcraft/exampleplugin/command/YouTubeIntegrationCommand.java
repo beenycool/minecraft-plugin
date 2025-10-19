@@ -102,6 +102,7 @@ public class YouTubeIntegrationCommand implements CommandExecutor, TabCompleter 
 
   private void updateConfigValueAndRestart(String key, String value) {
     plugin.getConfig().set(key, value);
+    // Also update the legacy bridge setting to keep them in sync.
     if ("youtube.target-player-ign".equals(key)) {
       plugin.getConfig().set("youtube-bridge.target-player", value);
     }

@@ -1,10 +1,14 @@
 # Configuration for the YouTube stream chat integration
-# Stream identifier can be a YouTube live chat ID or a URL.
 youtube:
+  # Required YouTube live chat identifier or URL used by the external listener.
   stream-identifier: ""
+  # Optional player IGN to receive direct messages; kept in sync with youtube-bridge.target-player.
   target-player-ign: ""
+  # Polling cadence for the Python listener (seconds, minimum of 1).
   polling-interval-seconds: 5
+  # Python interpreter on the host (Windows servers may prefer "python" or an absolute path).
   python-executable: "python3"
+  # Relative to the plugin data folder; defaults to the bundled script if missing.
   listener-script: "python/chat_listener.py"
 
 world-reset:

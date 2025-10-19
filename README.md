@@ -133,8 +133,9 @@ dependencies {
     spotbugsPlugins 'com.h3xstream.findsecbugs:findsecbugs-plugin:1.14.0'
     testCompileOnly 'com.github.spotbugs:spotbugs-annotations:4.9.8'
     testImplementation 'io.papermc.paper:paper-api:1.21.1-R0.1-SNAPSHOT'
-    testImplementation 'org.junit.jupiter:junit-jupiter:6.0.0'
-    testRuntimeOnly 'org.junit.platform:junit-platform-launcher:6.0.0'
+    testImplementation platform('org.junit:junit-bom:6.0.0')
+    testImplementation 'org.junit.jupiter:junit-jupiter'
+    testRuntimeOnly 'org.junit.platform:junit-platform-launcher'
 }
 ```
 

@@ -102,8 +102,9 @@ public class ExamplePlugin extends JavaPlugin {
     }
 
     if (listenerProcess != null) {
-      listenerProcess.stop();
+      com.crimsonwarpedcraft.exampleplugin.service.YouTubeChatBridge process = listenerProcess;
       listenerProcess = null;
+      stopListenerProcessAsync(process, null);
     }
 
     // Logic from main branch
@@ -143,9 +144,10 @@ public class ExamplePlugin extends JavaPlugin {
       return;
     }
 
-    listenerProcess.stop();
+    com.crimsonwarpedcraft.exampleplugin.service.YouTubeChatBridge process = listenerProcess;
 
     if (listenerSettings == null) {
+      stopListenerProcessAsync(process, null);
       return;
     }
 
@@ -153,17 +155,95 @@ public class ExamplePlugin extends JavaPlugin {
 
     File listenerScript = getListenerScriptFile();
     String streamIdentifier = listenerSettings.streamIdentifier();
+    if (streamIdentifier == null || streamIdentifier.isBlank()) {
+      getLogger().warning("No YouTube stream identifier configured; skipping listener start.");
+      stopListenerProcessAsync(process, null);
+      return;
+    }
+
     String targetIgn = listenerSettings.targetIgn();
     if ((targetIgn == null || targetIgn.isBlank()) && settings != null) {
       targetIgn = settings.targetPlayer();
     }
 
-    listenerProcess.start(
-        listenerSettings.pythonExecutable(),
-        listenerScript,
-        streamIdentifier,
-        listenerSettings.pollingIntervalSeconds(),
-        targetIgn);
+    String finalTarget = targetIgn;
+    stopListenerProcessAsync(
+        process,
+        () ->
+            startListenerProcess(
+                process,
+                listenerSettings.pythonExecutable(),
+                listenerScript,
+                streamIdentifier,
+                listenerSettings.pollingIntervalSeconds(),
+                finalTarget));
+  }
+
+  private void startListenerProcess(
+      com.crimsonwarpedcraft.exampleplugin.service.YouTubeChatBridge process,
+      String pythonExecutable,
+      File listenerScript,
+      String streamIdentifier,
+      int pollingIntervalSeconds,
+      String targetIgn) {
+    try {
+      getServer()
+          .getScheduler()
+          .runTaskAsynchronously(
+              this,
+              () -> {
+                try {
+                  process.start(
+                      pythonExecutable,
+                      listenerScript,
+                      streamIdentifier,
+                      pollingIntervalSeconds,
+                      targetIgn);
+                } catch (Exception e) {
+                  getLogger().log(Level.SEVERE, "Failed to start listener process", e);
+                }
+              });
+    } catch (IllegalStateException schedulerShutdown) {
+      try {
+        process.start(
+            pythonExecutable,
+            listenerScript,
+            streamIdentifier,
+            pollingIntervalSeconds,
+            targetIgn);
+      } catch (Exception e) {
+        getLogger().log(Level.SEVERE, "Failed to start listener process", e);
+      }
+    }
+  }
+
+  private void stopListenerProcessAsync(
+      com.crimsonwarpedcraft.exampleplugin.service.YouTubeChatBridge process, Runnable afterStop) {
+    if (process == null) {
+      if (afterStop != null) {
+        afterStop.run();
+      }
+      return;
+    }
+
+    Runnable stopTask =
+        () -> {
+          try {
+            process.stop();
+          } catch (Exception e) {
+            getLogger().log(Level.WARNING, "Failed to stop listener process cleanly", e);
+          }
+
+          if (afterStop != null) {
+            afterStop.run();
+          }
+        };
+
+    try {
+      getServer().getScheduler().runTaskAsynchronously(this, stopTask);
+    } catch (IllegalStateException schedulerShutdown) {
+      stopTask.run();
+    }
   }
 
   private void ensureListenerScriptAvailable() {
@@ -262,14 +342,12 @@ public class ExamplePlugin extends JavaPlugin {
       String potentialMessage = trimmed.substring(separatorIndex + 1).trim();
       if (!potentialAuthor.isEmpty()) {
         author = potentialAuthor;
-      }
-      if (!potentialMessage.isEmpty()) {
         content = potentialMessage;
       }
     }
 
     if (content.isEmpty()) {
-      content = trimmed;
+      return;
     }
 
     if (bridge != null) {
@@ -302,8 +380,8 @@ public class ExamplePlugin extends JavaPlugin {
           && player.isOnline()
           && player.hasPermission("example.ytstream.monitor")) {
         player.sendMessage(formatted);
+        return;
       }
-      return;
     }
 
     Bukkit.getOnlinePlayers().stream()
@@ -570,13 +648,25 @@ public class ExamplePlugin extends JavaPlugin {
         root = config.createSection("youtube");
       }
 
-      String streamIdentifier = Objects.requireNonNullElse(root.getString("stream-identifier"), "");
-      String targetIgn = Objects.requireNonNullElse(root.getString("target-player-ign"), "");
+      String streamIdentifier =
+          Optional.ofNullable(root.getString("stream-identifier"))
+              .map(String::trim)
+              .orElse("");
+      String targetIgn =
+          Optional.ofNullable(root.getString("target-player-ign"))
+              .map(String::trim)
+              .orElse("");
       int pollingInterval = Math.max(1, root.getInt("polling-interval-seconds", 5));
       String pythonExecutable =
-          Objects.requireNonNullElse(root.getString("python-executable"), "python3");
+          Optional.ofNullable(root.getString("python-executable"))
+              .map(String::trim)
+              .filter(value -> !value.isEmpty())
+              .orElse("python3");
       String listenerScript =
-          Objects.requireNonNullElse(root.getString("listener-script"), DEFAULT_LISTENER_SCRIPT);
+          Optional.ofNullable(root.getString("listener-script"))
+              .map(String::trim)
+              .filter(value -> !value.isEmpty())
+              .orElse(DEFAULT_LISTENER_SCRIPT);
 
       return new ListenerSettings(
           streamIdentifier, targetIgn, pollingInterval, pythonExecutable, listenerScript);
