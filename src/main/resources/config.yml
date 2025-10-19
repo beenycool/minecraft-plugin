@@ -10,6 +10,8 @@ youtube:
   python-executable: "python3"
   # Relative to the plugin data folder; defaults to the bundled script if missing.
   listener-script: "python/chat_listener.py"
+  # Optional Streamlabs Socket API token used to receive subscriber notifications.
+  streamlabs-socket-token: ""
 
 world-reset:
   interval-hours: 5

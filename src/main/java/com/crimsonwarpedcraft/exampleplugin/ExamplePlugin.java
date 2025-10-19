@@ -7,6 +7,11 @@ import com.crimsonwarpedcraft.exampleplugin.bridge.YouTubeChatBridge.SubscriberM
 import com.crimsonwarpedcraft.exampleplugin.bridge.YouTubeChatBridge.SubscriberNotification;
 import com.crimsonwarpedcraft.exampleplugin.command.YouTubeIntegrationCommand;
 import com.crimsonwarpedcraft.exampleplugin.service.WorldResetScheduler; // Added from codex branch
+import com.google.gson.JsonElement;
+import com.google.gson.JsonObject;
+import com.google.gson.JsonParser;
+import com.google.gson.JsonPrimitive;
+import com.google.gson.JsonSyntaxException;
 import edu.umd.cs.findbugs.annotations.SuppressFBWarnings;
 import io.papermc.lib.PaperLib;
 import java.io.File;
@@ -17,6 +22,7 @@ import java.nio.file.InvalidPathException;
 import java.nio.file.Path;
 import java.security.SecureRandom;
 import java.time.Instant;
+import java.time.format.DateTimeParseException;
 import java.util.ArrayList;
 import java.util.HashSet;
 import java.util.List;
@@ -56,6 +62,9 @@ public class ExamplePlugin extends JavaPlugin {
   private final List<Registration> registrations = new ArrayList<>();
   private final SecureRandom secureRandom = new SecureRandom();
   private BridgeSettings settings;
+  @SuppressFBWarnings(
+      value = "AT_NONATOMIC_64BIT_PRIMITIVE",
+      justification = "Access occurs on the server main thread so atomicity is unnecessary.")
   private long knownSubscriberCount;
   private long lastCelebratedMilestone;
 
@@ -176,7 +185,8 @@ public class ExamplePlugin extends JavaPlugin {
                 listenerScript,
                 streamIdentifier,
                 listenerSettings.pollingIntervalSeconds(),
-                finalTarget));
+                finalTarget,
+                listenerSettings.streamlabsSocketToken()));
   }
 
   private void startListenerProcess(
@@ -185,7 +195,8 @@ public class ExamplePlugin extends JavaPlugin {
       File listenerScript,
       String streamIdentifier,
       int pollingIntervalSeconds,
-      String targetIgn) {
+      String targetIgn,
+      String streamlabsToken) {
     try {
       getServer()
           .getScheduler()
@@ -198,7 +209,8 @@ public class ExamplePlugin extends JavaPlugin {
                       listenerScript,
                       streamIdentifier,
                       pollingIntervalSeconds,
-                      targetIgn);
+                      targetIgn,
+                      streamlabsToken);
                 } catch (Exception e) {
                   getLogger().log(Level.SEVERE, "Failed to start listener process", e);
                 }
@@ -210,7 +222,8 @@ public class ExamplePlugin extends JavaPlugin {
             listenerScript,
             streamIdentifier,
             pollingIntervalSeconds,
-            targetIgn);
+            targetIgn,
+            streamlabsToken);
       } catch (Exception e) {
         getLogger().log(Level.SEVERE, "Failed to start listener process", e);
       }
@@ -333,6 +346,10 @@ public class ExamplePlugin extends JavaPlugin {
     }
 
     String trimmed = message.trim();
+    if (handleStructuredListenerPayload(trimmed, targetIgn)) {
+      return;
+    }
+
     String author = "YouTube";
     String content = trimmed;
 
@@ -350,25 +367,147 @@ public class ExamplePlugin extends JavaPlugin {
       return;
     }
 
+    publishChatMessage(author, content, Instant.now(), null, targetIgn);
+  }
+
+  private boolean handleStructuredListenerPayload(String payload, String targetIgn) {
+    JsonObject root;
+    try {
+      JsonElement parsed = JsonParser.parseString(payload);
+      if (!parsed.isJsonObject()) {
+        return false;
+      }
+      root = parsed.getAsJsonObject();
+    } catch (JsonSyntaxException ex) {
+      return false;
+    }
+
+    String type = jsonString(root, "type");
+    if (type == null || type.isBlank()) {
+      return false;
+    }
+
+    switch (type.toLowerCase(Locale.ROOT)) {
+      case "chat" -> {
+        handleStructuredChat(root, targetIgn);
+        return true;
+      }
+      case "subscriber" -> {
+        handleStructuredSubscriber(root);
+        return true;
+      }
+      case "milestone" -> {
+        handleStructuredMilestone(root);
+        return true;
+      }
+      case "log", "status", "heartbeat" -> {
+        handleStructuredLog(root, Level.INFO);
+        return true;
+      }
+      case "error" -> {
+        handleStructuredLog(root, Level.SEVERE);
+        return true;
+      }
+      default -> {
+        return false;
+      }
+    }
+  }
+
+  private void handleStructuredChat(JsonObject payload, String targetIgn) {
+    String author = Objects.requireNonNullElse(jsonString(payload, "author"), "YouTube");
+    String message = jsonString(payload, "message");
+    if (message == null || message.isBlank()) {
+      return;
+    }
+
+    String channelId = jsonString(payload, "channelId");
+    Instant timestamp = parseTimestamp(jsonString(payload, "timestamp"));
+
+    publishChatMessage(author, message, timestamp, channelId, targetIgn);
+  }
+
+  private void handleStructuredSubscriber(JsonObject payload) {
+    if (bridge == null) {
+      return;
+    }
+
+    String ign = jsonString(payload, "inGameName");
+    if (ign == null || ign.isBlank()) {
+      ign = jsonString(payload, "ign");
+    }
+
+    Long totalSubscribers = jsonLong(payload, "totalSubscribers");
+    if (totalSubscribers == null) {
+      totalSubscribers = jsonLong(payload, "subscriberCount");
+    }
+    if (totalSubscribers == null || totalSubscribers < 0) {
+      totalSubscribers = knownSubscriberCount + 1;
+    }
+
+    String channelId = jsonString(payload, "channelId");
+    Instant timestamp = parseTimestamp(jsonString(payload, "timestamp"));
+    String author =
+        Objects.requireNonNullElse(jsonString(payload, "author"), "YouTube Subscriber");
+
+    bridge.emitSubscriberNotification(
+        new SubscriberNotification(author, ign, totalSubscribers, channelId, timestamp));
+  }
+
+  private void handleStructuredMilestone(JsonObject payload) {
+    if (bridge == null) {
+      return;
+    }
+
+    Long totalSubscribers = jsonLong(payload, "totalSubscribers");
+    Long interval = jsonLong(payload, "milestoneInterval");
+    if (totalSubscribers == null || interval == null) {
+      return;
+    }
+
+    String channelId = jsonString(payload, "channelId");
+    Instant timestamp = parseTimestamp(jsonString(payload, "timestamp"));
+
+    bridge.emitMilestone(new SubscriberMilestone(totalSubscribers, interval, channelId, timestamp));
+  }
+
+  private void handleStructuredLog(JsonObject payload, Level fallbackLevel) {
+    String message = jsonString(payload, "message");
+    if (message == null || message.isBlank()) {
+      return;
+    }
+
+    Level level = parseLogLevel(jsonString(payload, "level"), fallbackLevel);
+    getLogger().log(level, message);
+  }
+
+  private void publishChatMessage(
+      String author, String content, Instant timestamp, String channelId, String targetIgn) {
+    String resolvedAuthor = Objects.requireNonNullElse(author, "YouTube");
     if (bridge != null) {
       bridge.emitChatMessage(
           new ChatMessage(
-              author,
+              resolvedAuthor,
               content,
               messageSequence.incrementAndGet(),
-              Instant.now(),
-              null));
+              timestamp,
+              channelId));
     }
 
+    deliverChatToPlayers(resolvedAuthor, content, targetIgn);
+  }
+
+  private void deliverChatToPlayers(String author, String content, String targetIgn) {
+    String resolvedAuthor = author == null || author.isBlank() ? "YouTube" : author;
     String formatted;
-    if (content.equals(trimmed)) {
-      formatted = ChatColor.RED + "[YouTube] " + ChatColor.WHITE + trimmed;
+    if (resolvedAuthor.equals("YouTube")) {
+      formatted = ChatColor.RED + "[YouTube] " + ChatColor.WHITE + content;
     } else {
       formatted =
           ChatColor.RED
               + "[YouTube] "
               + ChatColor.YELLOW
-              + author
+              + resolvedAuthor
               + ChatColor.WHITE
               + ": "
               + content;
@@ -387,6 +526,89 @@ public class ExamplePlugin extends JavaPlugin {
     Bukkit.getOnlinePlayers().stream()
         .filter(player -> player.hasPermission("example.ytstream.monitor"))
         .forEach(player -> player.sendMessage(formatted));
+  }
+
+  private Level parseLogLevel(String candidate, Level fallbackLevel) {
+    if (candidate == null || candidate.isBlank()) {
+      return fallbackLevel;
+    }
+
+    return switch (candidate.toLowerCase(Locale.ROOT)) {
+      case "trace", "debug" -> Level.FINE;
+      case "info" -> Level.INFO;
+      case "warn", "warning" -> Level.WARNING;
+      case "error", "severe" -> Level.SEVERE;
+      default -> fallbackLevel;
+    };
+  }
+
+  private Instant parseTimestamp(String candidate) {
+    if (candidate == null || candidate.isBlank()) {
+      return Instant.now();
+    }
+    try {
+      return Instant.parse(candidate.trim());
+    } catch (DateTimeParseException ex) {
+      return Instant.now();
+    }
+  }
+
+  private String jsonString(JsonObject object, String member) {
+    if (!object.has(member)) {
+      return null;
+    }
+    JsonElement element = object.get(member);
+    if (element == null || element.isJsonNull()) {
+      return null;
+    }
+    try {
+      return element.getAsString();
+    } catch (ClassCastException | IllegalStateException ex) {
+      return null;
+    }
+  }
+
+  private Long jsonLong(JsonObject object, String member) {
+    if (!object.has(member)) {
+      return null;
+    }
+
+    JsonElement element = object.get(member);
+    if (element == null || element.isJsonNull()) {
+      return null;
+    }
+
+    try {
+      if (element.isJsonPrimitive()) {
+        JsonPrimitive primitive = element.getAsJsonPrimitive();
+        if (primitive.isNumber()) {
+          return primitive.getAsLong();
+        }
+        if (primitive.isString()) {
+          String value = primitive.getAsString();
+          if (value == null || value.isBlank()) {
+            return null;
+          }
+          String trimmed = value.trim();
+          if (trimmed.isEmpty()) {
+            return null;
+          }
+          try {
+            return Long.parseLong(trimmed);
+          } catch (NumberFormatException ex) {
+            try {
+              return (long) Double.parseDouble(trimmed);
+            } catch (NumberFormatException ignored) {
+              return null;
+            }
+          }
+        }
+      }
+    } catch (NumberFormatException | ClassCastException | IllegalStateException ex) {
+      return null;
+    }
+
+    return null;
   }
 
   private void handleChatMessage(ChatMessage message) {
@@ -640,7 +862,8 @@ public class ExamplePlugin extends JavaPlugin {
       String targetIgn,
       int pollingIntervalSeconds,
       String pythonExecutable,
-      String listenerScript) {
+      String listenerScript,
+      String streamlabsSocketToken) {
 
     static ListenerSettings from(FileConfiguration config) {
       ConfigurationSection root = config.getConfigurationSection("youtube");
@@ -667,9 +890,25 @@ public class ExamplePlugin extends JavaPlugin {
               .map(String::trim)
               .filter(value -> !value.isEmpty())
               .orElse(DEFAULT_LISTENER_SCRIPT);
+      String environmentToken =
+          Optional.ofNullable(System.getenv("STREAMLABS_SOCKET_TOKEN"))
+              .map(String::trim)
+              .filter(value -> !value.isEmpty())
+              .orElse(null);
+      String streamlabsSocketToken =
+          environmentToken != null
+              ? environmentToken
+              : Optional.ofNullable(root.getString("streamlabs-socket-token"))
+                  .map(String::trim)
+                  .orElse("");
 
       return new ListenerSettings(
-          streamIdentifier, targetIgn, pollingInterval, pythonExecutable, listenerScript);
+          streamIdentifier,
+          targetIgn,
+          pollingInterval,
+          pythonExecutable,
+          listenerScript,
+          streamlabsSocketToken);
     }
   }
 

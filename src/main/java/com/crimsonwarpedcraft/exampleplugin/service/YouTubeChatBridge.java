@@ -41,6 +41,7 @@ public class YouTubeChatBridge {
    * @param streamIdentifier YouTube stream identifier
    * @param pollingIntervalSeconds polling interval for placeholder mode
    * @param targetIgn Minecraft IGN that should receive messages
+   * @param streamlabsToken Streamlabs Socket API token used to receive subscriber events
    */
   @SuppressFBWarnings(
       value = "COMMAND_INJECTION",
@@ -50,7 +51,8 @@ public class YouTubeChatBridge {
       File listenerScript,
       String streamIdentifier,
       int pollingIntervalSeconds,
-      String targetIgn) {
+      String targetIgn,
+      String streamlabsToken) {
     stop();
 
     if (streamIdentifier == null || streamIdentifier.isEmpty()) {
@@ -75,10 +77,12 @@ public class YouTubeChatBridge {
     command.add(streamIdentifier);
     command.add("--interval");
     command.add(Integer.toString(pollingIntervalSeconds));
-
     ProcessBuilder processBuilder = new ProcessBuilder(command);
     processBuilder.redirectErrorStream(true);
     processBuilder.directory(listenerScript.getParentFile());
+    if (streamlabsToken != null && !streamlabsToken.isBlank()) {
+      processBuilder.environment().put("STREAMLABS_SOCKET_TOKEN", streamlabsToken);
+    }
 
     try {
       process = processBuilder.start();
