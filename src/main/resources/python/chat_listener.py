@@ -9,10 +9,13 @@ its integration without additional dependencies.
 from __future__ import annotations
 
 import argparse
+import json
 import re
 import sys
+import threading
 import time
 from datetime import datetime
+from typing import Any, Dict, Iterable, Optional
 from urllib.parse import parse_qs, urlparse
 
 
@@ -25,12 +28,26 @@ def _parse_args() -> argparse.Namespace:
         default=5,
         help="Polling interval in seconds when pytchat is unavailable",
     )
+    parser.add_argument(
+        "--streamlabs-token",
+        dest="streamlabs_token",
+        help="Streamlabs Socket API token used to receive subscriber events",
+    )
     return parser.parse_args()
 
 
 def _emit(message: str) -> None:
     sys.stdout.write(message + "\n")
     sys.stdout.flush()
+
+
+def _emit_json(payload: Dict[str, Any]) -> None:
+    sys.stdout.write(json.dumps(payload, ensure_ascii=False) + "\n")
+    sys.stdout.flush()
+
+
+def _timestamp() -> str:
+    return datetime.utcnow().isoformat(timespec="seconds") + "Z"
 
 
 def _normalize_stream_identifier(stream_identifier: str) -> str:
@@ -56,37 +73,222 @@ def _normalize_stream_identifier(stream_identifier: str) -> str:
     return stream_identifier
 
 
-def _run_with_pytchat(stream_identifier: str) -> None:
+def _emit_chat(
+    author: str,
+    message: str,
+    channel_id: Optional[str] = None,
+    message_id: Optional[int] = None,
+) -> None:
+    payload: Dict[str, Any] = {
+        "type": "chat",
+        "author": author,
+        "message": message,
+        "timestamp": _timestamp(),
+    }
+    if channel_id:
+        payload["channelId"] = channel_id
+    if message_id is not None:
+        payload["messageId"] = message_id
+    _emit_json(payload)
+
+
+def _emit_log(message: str, level: str = "info", **extra: Any) -> None:
+    payload: Dict[str, Any] = {
+        "type": "log",
+        "level": level,
+        "message": message,
+        "timestamp": _timestamp(),
+    }
+    if extra:
+        payload.update(extra)
+    _emit_json(payload)
+
+
+def _emit_error(message: str, **extra: Any) -> None:
+    payload: Dict[str, Any] = {
+        "type": "error",
+        "level": "error",
+        "message": message,
+        "timestamp": _timestamp(),
+    }
+    if extra:
+        payload.update(extra)
+    _emit_json(payload)
+
+
+def _emit_subscriber(
+    author: str,
+    total_subscribers: Optional[int],
+    channel_id: Optional[str],
+    raw: Optional[Dict[str, Any]] = None,
+) -> None:
+    payload: Dict[str, Any] = {
+        "type": "subscriber",
+        "author": author,
+        "timestamp": _timestamp(),
+    }
+    if total_subscribers is not None:
+        payload["totalSubscribers"] = total_subscribers
+    if channel_id:
+        payload["channelId"] = channel_id
+    if raw:
+        payload["raw"] = raw
+    _emit_json(payload)
+
+
+def _run_with_pytchat(stream_identifier: str, stop_event: threading.Event) -> None:
     import pytchat
 
     chat = pytchat.create(video_id=stream_identifier)
-    while chat.is_alive():
+    while not stop_event.is_set() and chat.is_alive():
         for item in chat.get().items:
-            _emit(f"{item.author.name}: {item.message}")
+            author = getattr(item.author, "name", "YouTube")
+            channel_id = getattr(item.author, "channelId", None)
+            message_identifier = getattr(item, "id", None)
+            if message_identifier is None:
+                message_identifier = getattr(item, "timestamp", None)
+            message_id = None
+            if message_identifier is not None:
+                try:
+                    message_id = int(message_identifier)
+                except (TypeError, ValueError):
+                    message_id = None
+            _emit_chat(author, item.message, channel_id=channel_id, message_id=message_id)
         time.sleep(1)
 
 
-def _run_placeholder(stream_identifier: str, interval: int) -> None:
-    _emit(f"YouTube: Simulated relay for {stream_identifier}")
-    while True:
+def _run_placeholder(stream_identifier: str, interval: int, stop_event: threading.Event) -> None:
+    _emit_chat("YouTube", f"Simulated relay for {stream_identifier}")
+    while not stop_event.is_set():
         time.sleep(interval)
-        _emit(f"YouTube: Heartbeat at {datetime.utcnow().isoformat()}Z")
+        _emit_log("Heartbeat", stream="placeholder", streamIdentifier=stream_identifier)
+
+
+def _safe_int(value: Any) -> Optional[int]:
+    if value is None:
+        return None
+    try:
+        if isinstance(value, str) and value.strip() == "":
+            return None
+        if isinstance(value, str) and value.strip().isdigit():
+            return int(value.strip())
+        return int(float(value))
+    except (TypeError, ValueError):
+        return None
+
+
+def _maybe_iterable(value: Any) -> Iterable[Any]:
+    if isinstance(value, list):
+        return value
+    if value is None:
+        return []
+    return [value]
+
+
+def _handle_streamlabs_event(payload: Dict[str, Any]) -> None:
+    event_type = str(payload.get("type") or payload.get("event_type") or "").lower()
+    platform_hint = str(payload.get("for") or "").lower()
+    messages = _maybe_iterable(payload.get("message"))
+
+    for entry in messages:
+        if not isinstance(entry, dict):
+            continue
+        platform = str(entry.get("platform") or platform_hint).lower()
+        if platform and "youtube" not in platform:
+            continue
+
+        if event_type not in {"subscription", "resubscription", "mass_subscription"}:
+            continue
+
+        author = (
+            entry.get("name")
+            or entry.get("display_name")
+            or entry.get("from")
+            or "YouTube Subscriber"
+        )
+        total_subscribers = _safe_int(entry.get("count") or entry.get("amount"))
+        channel_id = entry.get("channel_id")
+        _emit_subscriber(str(author), total_subscribers, channel_id, raw=entry)
+
+
+def _run_streamlabs_listener(token: str, stop_event: threading.Event) -> None:
+    try:
+        import socketio  # type: ignore
+    except ModuleNotFoundError:
+        _emit_log(
+            "python-socketio not installed; Streamlabs subscriber integration disabled",
+            level="warning",
+        )
+        return
+
+    sio = socketio.Client(logger=False, engineio_logger=False)
+
+    @sio.event
+    def connect() -> None:  # pragma: no cover - requires remote service
+        _emit_log("Connected to Streamlabs Socket API", level="info")
+
+    @sio.event
+    def disconnect() -> None:  # pragma: no cover - requires remote service
+        _emit_log("Disconnected from Streamlabs Socket API", level="info")
+
+    @sio.on("event")
+    def on_event(data: Any) -> None:  # pragma: no cover - requires remote service
+        if isinstance(data, dict):
+            try:
+                _handle_streamlabs_event(data)
+            except Exception as exc:  # pragma: no cover - defensive logging
+                _emit_error("Streamlabs event handling failed", error=str(exc))
+
+    url = f"https://sockets.streamlabs.com?token={token}"
+    try:
+        sio.connect(url, transports=["websocket"], wait=True)
+    except Exception as exc:  # pragma: no cover - depends on environment
+        _emit_error("Failed to connect to Streamlabs Socket API", error=str(exc))
+        return
+
+    try:
+        while not stop_event.is_set():
+            sio.sleep(0.5)
+    except KeyboardInterrupt:  # pragma: no cover - handled by caller
+        pass
+    finally:
+        try:
+            sio.disconnect()
+        except Exception:  # pragma: no cover - cleanup best effort
+            pass
 
 
 def main() -> int:
     args = _parse_args()
     stream_identifier = _normalize_stream_identifier(args.stream)
+    stop_event = threading.Event()
+
+    streamlabs_thread: Optional[threading.Thread] = None
+    if args.streamlabs_token:
+        streamlabs_thread = threading.Thread(
+            target=_run_streamlabs_listener, args=(args.streamlabs_token, stop_event), daemon=True
+        )
+        streamlabs_thread.start()
 
     try:
-        _run_with_pytchat(stream_identifier)
-    except ModuleNotFoundError:
-        _emit("YouTube: pytchat not installed; using placeholder output")
-        _run_placeholder(stream_identifier, args.interval)
+        try:
+            _run_with_pytchat(stream_identifier, stop_event)
+        except ModuleNotFoundError:
+            _emit_log(
+                "pytchat not installed; using placeholder output",
+                level="warning",
+                streamIdentifier=stream_identifier,
+            )
+            _run_placeholder(stream_identifier, args.interval, stop_event)
     except KeyboardInterrupt:
         return 0
     except Exception as exc:  # pragma: no cover - defensive logging
-        _emit(f"Error: {exc}")
+        _emit_error("Unhandled listener error", error=str(exc))
         return 1
+    finally:
+        stop_event.set()
+        if streamlabs_thread is not None:
+            streamlabs_thread.join(timeout=5.0)
 
     return 0
 
