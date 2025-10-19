@@ -2,22 +2,29 @@ package com.crimsonwarpedcraft.exampleplugin.service;
 
 import edu.umd.cs.findbugs.annotations.SuppressFBWarnings;
 import java.io.IOException;
+import java.nio.file.FileVisitResult;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.nio.file.SimpleFileVisitor;
 import java.nio.file.StandardCopyOption;
+import java.nio.file.attribute.BasicFileAttributes;
 import java.util.ArrayList;
-import java.util.Comparator;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
+import java.util.Set;
+import java.util.concurrent.CompletableFuture;
 import java.util.logging.Level;
+import java.util.stream.Collectors;
 import org.bukkit.Bukkit;
 import org.bukkit.Location;
 import org.bukkit.World;
 import org.bukkit.WorldCreator;
+import org.bukkit.WorldType;
 import org.bukkit.configuration.ConfigurationSection;
 import org.bukkit.entity.Player;
+import org.bukkit.generator.ChunkGenerator;
 import org.bukkit.plugin.java.JavaPlugin;
 import org.bukkit.scheduler.BukkitScheduler;
 import org.bukkit.scheduler.BukkitTask;
@@ -88,18 +95,40 @@ public class WorldResetScheduler {
     }
 
     Map<Player, SavedLocation> toRestore = evacuatePlayers(targets, holdingLocation);
-    executeResetCommands();
+    executeCommandsAtPath("world-reset.pre-reset-commands");
+
+    CompletableFuture<Void> resetFuture = CompletableFuture.completedFuture(null);
     for (TargetWorld target : targets) {
-      resetWorld(target);
+      resetFuture = resetFuture.thenCompose(ignored -> resetWorldAsync(target));
     }
 
-    // Delay the return slightly to ensure the worlds are fully initialised.
-    Bukkit.getScheduler()
-        .runTaskLater(plugin, () -> returnPlayers(toRestore), TICKS_PER_SECOND * 5L);
+    resetFuture.whenComplete(
+        (ignored, throwable) -> {
+          if (throwable != null) {
+            plugin
+                .getLogger()
+                .log(
+                    Level.SEVERE,
+                    "One or more worlds failed to reset during the routine.",
+                    throwable);
+          }
+          Bukkit.getScheduler()
+              .runTask(
+                  plugin,
+                  () ->
+                      Bukkit.getScheduler()
+                          .runTaskLater(
+                              plugin,
+                              () -> {
+                                returnPlayers(toRestore);
+                                executeCommandsAtPath("world-reset.post-reset-commands");
+                              },
+                              TICKS_PER_SECOND * 5L));
+        });
   }
 
-  private void executeResetCommands() {
-    List<String> commands = plugin.getConfig().getStringList("world-reset.reset-commands");
+  private void executeCommandsAtPath(String path) {
+    List<String> commands = plugin.getConfig().getStringList(path);
     if (commands.isEmpty()) {
       return;
     }
@@ -115,14 +144,14 @@ public class WorldResetScheduler {
   private Map<Player, SavedLocation> evacuatePlayers(
       List<TargetWorld> targets, HoldingLocation holdingLocation) {
     Map<Player, SavedLocation> originals = new HashMap<>();
+    Set<String> targetNames = targets.stream().map(TargetWorld::name).collect(Collectors.toSet());
     for (Player player : Bukkit.getOnlinePlayers()) {
       World world = player.getWorld();
       if (world == null) {
         continue;
       }
 
-      boolean inTarget = targets.stream().anyMatch(target -> target.name.equals(world.getName()));
-      if (!inTarget) {
+      if (!targetNames.contains(world.getName())) {
         continue;
       }
 
@@ -133,41 +162,98 @@ public class WorldResetScheduler {
     return originals;
   }
 
-  private void resetWorld(TargetWorld target) {
+  private CompletableFuture<Void> resetWorldAsync(TargetWorld target) {
+    CompletableFuture<Void> future = new CompletableFuture<>();
+    Bukkit.getScheduler().runTask(plugin, () -> runResetOnMainThread(target, future));
+    return future;
+  }
+
+  @SuppressFBWarnings(
+      value = "RCN_REDUNDANT_NULLCHECK_OF_NONNULL_VALUE",
+      justification = "Guard against edge cases where Bukkit returns a null world container.")
+  private void runResetOnMainThread(TargetWorld target, CompletableFuture<Void> future) {
     World world = Bukkit.getWorld(target.name);
+    WorldCreationSettings creationSettings = WorldCreationSettings.from(world);
     if (world != null) {
       world.save();
       if (!Bukkit.unloadWorld(world, true)) {
         plugin
             .getLogger()
-            .log(Level.WARNING, "Failed to unload world {0}; skipping regeneration.", target.name);
+            .log(
+                Level.WARNING,
+                "Failed to unload world {0}; skipping regeneration.",
+                target.name);
+        future.complete(null);
         return;
       }
     }
 
-    Path worldFolder =
-        Objects.requireNonNull(Bukkit.getWorldContainer(), "World container is unavailable")
-            .toPath()
-            .resolve(target.name);
-    try {
-      deleteDirectory(worldFolder);
-      if (target.templateDirectory != null) {
-        Path templatePath = resolveTemplateDirectory(target.templateDirectory);
-        if (Files.notExists(templatePath)) {
-          plugin
-              .getLogger()
-              .warning("Template directory missing for world " + target.name + ": " + templatePath);
-        } else {
-          copyDirectory(templatePath, worldFolder);
-        }
-      }
-    } catch (IOException ex) {
-      plugin.getLogger().log(Level.SEVERE, "Failed to prepare world folder for " + target.name, ex);
+    java.io.File worldContainer = Bukkit.getWorldContainer();
+    if (worldContainer == null) {
+      plugin
+          .getLogger()
+          .log(
+              Level.SEVERE,
+              "World container is unavailable; skipping regeneration for {0}",
+              target.name);
+      future.complete(null);
       return;
     }
 
-    WorldCreator.name(target.name).createWorld();
-    plugin.getLogger().info("World reset completed for " + target.name);
+    Path worldFolder = worldContainer.toPath().resolve(target.name);
+    Bukkit.getScheduler()
+        .runTaskAsynchronously(
+            plugin,
+            () -> {
+              try {
+                deleteDirectory(worldFolder);
+                if (target.templateDirectory != null) {
+                  Path templatePath = resolveTemplateDirectory(target.templateDirectory);
+                  if (Files.notExists(templatePath)) {
+                    plugin
+                        .getLogger()
+                        .warning(
+                            "Template directory missing for world "
+                                + target.name
+                                + ": "
+                                + templatePath);
+                  } else {
+                    copyDirectory(templatePath, worldFolder);
+                  }
+                }
+
+                Bukkit.getScheduler()
+                    .runTask(
+                        plugin,
+                        () -> {
+                          try {
+                            WorldCreator creator = WorldCreator.name(target.name);
+                            creationSettings.apply(creator);
+                            creator.createWorld();
+                            plugin
+                                .getLogger()
+                                .info("World reset completed for " + target.name);
+                          } catch (Exception creationException) {
+                            plugin
+                                .getLogger()
+                                .log(
+                                    Level.SEVERE,
+                                    "Failed to recreate world " + target.name,
+                                    creationException);
+                          } finally {
+                            future.complete(null);
+                          }
+                        });
+              } catch (Exception ex) {
+                plugin
+                    .getLogger()
+                    .log(
+                        Level.SEVERE,
+                        "Failed to prepare world folder for " + target.name,
+                        ex);
+                future.complete(null);
+              }
+            });
   }
 
   private void returnPlayers(Map<Player, SavedLocation> toRestore) {
@@ -229,11 +315,17 @@ public class WorldResetScheduler {
   }
 
   private Path resolveTemplateDirectory(String configuredPath) {
+    Path base = plugin.getDataFolder().toPath();
     Path templatePath = Path.of(configuredPath);
-    if (!templatePath.isAbsolute()) {
-      templatePath = plugin.getDataFolder().toPath().resolve(templatePath);
+    Path resolved =
+        templatePath.isAbsolute()
+            ? templatePath.normalize()
+            : base.resolve(templatePath).normalize();
+    if (!resolved.startsWith(base)) {
+      throw new IllegalArgumentException(
+          "Template directory must be within the plugin data folder.");
     }
-    return templatePath;
+    return resolved;
   }
 
   private void deleteDirectory(Path path) throws IOException {
@@ -241,14 +333,25 @@ public class WorldResetScheduler {
       return;
     }
 
-    List<Path> paths = new ArrayList<>();
-    try (var stream = Files.walk(path)) {
-      stream.forEach(paths::add);
-    }
-    paths.sort(Comparator.reverseOrder());
-    for (Path p : paths) {
-      Files.deleteIfExists(p);
-    }
+    Files.walkFileTree(
+        path,
+        new SimpleFileVisitor<>() {
+          @Override
+          public FileVisitResult visitFile(
+              Path file, BasicFileAttributes attrs) throws IOException {
+            Files.delete(file);
+            return FileVisitResult.CONTINUE;
+          }
+
+          @Override
+          public FileVisitResult postVisitDirectory(Path dir, IOException exc) throws IOException {
+            if (exc != null) {
+              throw exc;
+            }
+            Files.delete(dir);
+            return FileVisitResult.CONTINUE;
+          }
+        });
   }
 
   private void copyDirectory(Path source, Path destination) throws IOException {
@@ -256,26 +359,54 @@ public class WorldResetScheduler {
       return;
     }
 
-    try (var stream = Files.walk(source)) {
-      stream.forEach(
-          path -> {
-            Path target = destination.resolve(source.relativize(path));
-            try {
-              if (Files.isDirectory(path)) {
-                Files.createDirectories(target);
-              } else {
-                Files.createDirectories(target.getParent());
-                Files.copy(path, target, StandardCopyOption.REPLACE_EXISTING);
-              }
-            } catch (IOException ex) {
-              throw new RuntimeException(ex);
-            }
-          });
-    } catch (RuntimeException ex) {
-      if (ex.getCause() instanceof IOException ioEx) {
-        throw ioEx;
+    Files.walkFileTree(
+        source,
+        new SimpleFileVisitor<>() {
+          @Override
+          public FileVisitResult preVisitDirectory(Path dir, BasicFileAttributes attrs)
+              throws IOException {
+            Files.createDirectories(destination.resolve(source.relativize(dir)));
+            return FileVisitResult.CONTINUE;
+          }
+
+          @Override
+          public FileVisitResult visitFile(
+              Path file, BasicFileAttributes attrs) throws IOException {
+            Files.copy(
+                file,
+                destination.resolve(source.relativize(file)),
+                StandardCopyOption.REPLACE_EXISTING);
+            return FileVisitResult.CONTINUE;
+          }
+        });
+  }
+
+  private record WorldCreationSettings(
+      World.Environment environment, Long seed, WorldType worldType, ChunkGenerator generator) {
+    private static WorldCreationSettings from(World world) {
+      if (world == null) {
+        return new WorldCreationSettings(null, null, null, null);
       }
-      throw ex;
+      return new WorldCreationSettings(
+          world.getEnvironment(),
+          world.getSeed(),
+          world.getWorldType(),
+          world.getGenerator());
+    }
+
+    private void apply(WorldCreator creator) {
+      if (environment != null) {
+        creator.environment(environment);
+      }
+      if (worldType != null) {
+        creator.type(worldType);
+      }
+      if (seed != null) {
+        creator.seed(seed);
+      }
+      if (generator != null) {
+        creator.generator(generator);
+      }
     }
   }
 

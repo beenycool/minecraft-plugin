@@ -18,9 +18,6 @@ public class ExamplePlugin extends JavaPlugin {
     PaperLib.suggestPaper(this);
 
     saveDefaultConfig();
-    if (!getDataFolder().exists() && !getDataFolder().mkdirs()) {
-      getLogger().warning("Unable to create plugin data directory.");
-    }
 
     worldResetScheduler = new WorldResetScheduler(this);
     worldResetScheduler.start();

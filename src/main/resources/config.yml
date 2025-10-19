@@ -10,6 +10,7 @@ world-reset:
   target-worlds:
     - name: example_world
       template-directory: templates/example_world
-  reset-commands:
+  pre-reset-commands:
     - "say Beginning scheduled world reset"
+  post-reset-commands:
     - "say World reset completed"
