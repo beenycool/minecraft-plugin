@@ -1,3 +1,12 @@
+# Configuration for the YouTube stream chat integration
+# Stream identifier can be a YouTube live chat ID or a URL.
+youtube:
+  stream-identifier: ""
+  target-player-ign: ""
+  polling-interval-seconds: 5
+  python-executable: "python3"
+  listener-script: "python/chat_listener.py"
+
 world-reset:
   interval-hours: 5
   holding:
