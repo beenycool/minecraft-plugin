@@ -46,9 +46,7 @@ public class ExamplePlugin extends JavaPlugin {
 
     saveDefaultConfig();
     reloadBridgeSettings();
-
-    knownSubscriberCount = 0L;
-    lastCelebratedMilestone = 0L;
+    loadSubscriberState();
 
     bridge = new YouTubeChatBridge(this);
     bridge.setSubscriberMilestoneInterval(settings.subscriberMilestoneInterval());
@@ -92,19 +90,16 @@ public class ExamplePlugin extends JavaPlugin {
     }
 
     Player player = target.get();
-    Bukkit.getScheduler()
-        .runTask(
-            this,
-            () ->
-                spawnSingleTnt(
-                    player.getLocation(),
-                    settings.chatTntFuseTicks,
-                    settings.chatTntVerticalOffset));
+    spawnSingleTnt(
+        player.getLocation(), settings.chatTntFuseTicks, settings.chatTntVerticalOffset);
   }
 
   private void handleSubscriberNotification(SubscriberNotification notification) {
-    knownSubscriberCount = Math.max(knownSubscriberCount, notification.totalSubscribers());
-    maybeTriggerMilestoneFromSubscribers(knownSubscriberCount);
+    boolean subscriberCountChanged =
+        updateKnownSubscriberCount(notification.totalSubscribers());
+    if (subscriberCountChanged) {
+      persistSubscriberState();
+    }
 
     if (!settings.enabled || !settings.subscriberKillEnabled) {
       return;
@@ -130,12 +125,12 @@ public class ExamplePlugin extends JavaPlugin {
               if (!isWorldAllowed(target.getWorld())) {
                 return;
               }
-              Bukkit.dispatchCommand(Bukkit.getConsoleSender(), "kill " + finalIgn);
+              target.setHealth(0.0);
             });
   }
 
   private void handleMilestone(SubscriberMilestone milestone) {
-    knownSubscriberCount = Math.max(knownSubscriberCount, milestone.totalSubscribers());
+    updateKnownSubscriberCount(milestone.totalSubscribers());
 
     if (!settings.enabled || !settings.milestoneEnabled) {
       return;
@@ -153,6 +148,7 @@ public class ExamplePlugin extends JavaPlugin {
     Player player = target.get();
     spawnMilestoneCelebration(player, milestone);
     lastCelebratedMilestone = milestone.totalSubscribers();
+    persistSubscriberState();
   }
 
   private Optional<Player> resolveConfiguredPlayer() {
@@ -281,33 +277,42 @@ public class ExamplePlugin extends JavaPlugin {
     }.runTaskTimer(this, 0L, milestoneSettings.tickInterval);
   }
 
-  private void maybeTriggerMilestoneFromSubscribers(long totalSubscribers) {
-    if (!settings.enabled || !settings.milestoneEnabled) {
-      return;
-    }
-
-    long interval = settings.subscriberMilestoneInterval();
-    if (interval <= 0) {
-      return;
-    }
-
-    if (totalSubscribers > lastCelebratedMilestone && totalSubscribers % interval == 0) {
-      Optional<Player> target = resolveConfiguredPlayer();
-      if (target.isEmpty()) {
-        return;
-      }
-      Player player = target.get();
-      SubscriberMilestone milestone =
-          new SubscriberMilestone(totalSubscribers, interval, null, Instant.now());
-      spawnMilestoneCelebration(player, milestone);
-      lastCelebratedMilestone = totalSubscribers;
-    }
-  }
-
   private void reloadBridgeSettings() {
     reloadConfig();
     FileConfiguration config = getConfig();
     settings = BridgeSettings.from(config);
+  }
+
+  private void loadSubscriberState() {
+    FileConfiguration config = getConfig();
+    ConfigurationSection state = config.getConfigurationSection("youtube-bridge-state");
+    if (state == null) {
+      knownSubscriberCount = 0L;
+      lastCelebratedMilestone = 0L;
+      return;
+    }
+    knownSubscriberCount = state.getLong("known-subscriber-count", 0L);
+    lastCelebratedMilestone = state.getLong("last-celebrated-milestone", 0L);
+  }
+
+  private void persistSubscriberState() {
+    FileConfiguration config = getConfig();
+    ConfigurationSection state = config.getConfigurationSection("youtube-bridge-state");
+    if (state == null) {
+      state = config.createSection("youtube-bridge-state");
+    }
+    state.set("known-subscriber-count", knownSubscriberCount);
+    state.set("last-celebrated-milestone", lastCelebratedMilestone);
+    saveConfig();
+  }
+
+  private boolean updateKnownSubscriberCount(long totalSubscribers) {
+    long updated = Math.max(knownSubscriberCount, totalSubscribers);
+    if (updated != knownSubscriberCount) {
+      knownSubscriberCount = updated;
+      return true;
+    }
+    return false;
   }
 
   private record BridgeSettings(
