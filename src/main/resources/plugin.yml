@@ -5,16 +5,16 @@ api-version: "1.21.1"
 author: AUTHOR
 description: DESCRIPTION
 commands:
-  ex:
-    description: Base command for EXAMPLE
-    usage: "For a list of commands, type /ex help"
-    aliases: example
+  ytstream:
+    description: Manage the YouTube chat bridge
+    usage: "/ytstream <setchat|settarget|reload>"
+    aliases: [yt]
+    permission: example.ytstream.use
+    permission-message: "You do not have permission to manage the YouTube stream integration."
 permissions:
-  example.test:
-    description: DESCRIPTION
+  example.ytstream.use:
+    description: Allows managing the YouTube stream chat bridge
+    default: op
+  example.ytstream.monitor:
+    description: Allows receiving chat messages from the YouTube bridge
     default: true
-  example.*:
-    description: Grants all other permissions
-    default: false
-    children:
-      example.test: true
