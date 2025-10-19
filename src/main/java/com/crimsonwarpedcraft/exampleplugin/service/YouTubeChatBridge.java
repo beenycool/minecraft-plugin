@@ -11,6 +11,7 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import java.util.concurrent.TimeUnit;
 import java.util.logging.Level;
 
 /**
@@ -128,7 +129,11 @@ public class YouTubeChatBridge {
     if (process != null) {
       process.destroy();
       try {
-        process.waitFor();
+        if (!process.waitFor(5, TimeUnit.SECONDS)) {
+          plugin.getLogger().warning("YouTube chat listener did not exit; forcing termination.");
+          process.destroyForcibly();
+          process.waitFor(2, TimeUnit.SECONDS);
+        }
       } catch (InterruptedException e) {
         Thread.currentThread().interrupt();
       }

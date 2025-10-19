@@ -9,9 +9,11 @@ its integration without additional dependencies.
 from __future__ import annotations
 
 import argparse
+import re
 import sys
 import time
 from datetime import datetime
+from urllib.parse import parse_qs, urlparse
 
 
 def _parse_args() -> argparse.Namespace:
@@ -29,6 +31,29 @@ def _parse_args() -> argparse.Namespace:
 def _emit(message: str) -> None:
     sys.stdout.write(message + "\n")
     sys.stdout.flush()
+
+
+def _normalize_stream_identifier(stream_identifier: str) -> str:
+    """Return a YouTube video identifier when given a URL or identifier string."""
+
+    if not stream_identifier:
+        return stream_identifier
+
+    parsed = urlparse(stream_identifier)
+    if parsed.scheme and parsed.netloc:
+        query_params = parse_qs(parsed.query)
+        video_id = next((value for value in query_params.get("v", []) if value), None)
+        if not video_id and parsed.path:
+            segments = [segment for segment in parsed.path.split("/") if segment]
+            if segments:
+                candidate = segments[-1]
+                match = re.fullmatch(r"[A-Za-z0-9_-]{11}", candidate)
+                if match:
+                    video_id = match.group(0)
+        if video_id:
+            return video_id
+
+    return stream_identifier
 
 
 def _run_with_pytchat(stream_identifier: str) -> None:
@@ -50,12 +75,13 @@ def _run_placeholder(stream_identifier: str, interval: int) -> None:
 
 def main() -> int:
     args = _parse_args()
+    stream_identifier = _normalize_stream_identifier(args.stream)
 
     try:
-        _run_with_pytchat(args.stream)
+        _run_with_pytchat(stream_identifier)
     except ModuleNotFoundError:
         _emit("YouTube: pytchat not installed; using placeholder output")
-        _run_placeholder(args.stream, args.interval)
+        _run_placeholder(stream_identifier, args.interval)
     except KeyboardInterrupt:
         return 0
     except Exception as exc:  # pragma: no cover - defensive logging

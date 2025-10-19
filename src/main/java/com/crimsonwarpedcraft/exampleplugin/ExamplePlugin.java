@@ -4,9 +4,9 @@ import com.crimsonwarpedcraft.exampleplugin.command.YouTubeIntegrationCommand;
 import com.crimsonwarpedcraft.exampleplugin.service.YouTubeChatBridge;
 import io.papermc.lib.PaperLib;
 import java.io.File;
-import java.io.FileOutputStream;
 import java.io.IOException;
 import java.io.InputStream;
+import java.nio.file.Files;
 import java.nio.file.InvalidPathException;
 import java.nio.file.Path;
 import java.util.logging.Level;
@@ -112,12 +112,12 @@ public class ExamplePlugin extends JavaPlugin {
         return;
       }
 
-      try (FileOutputStream output = new FileOutputStream(scriptFile)) {
-        byte[] buffer = new byte[4096];
-        int read;
-        while ((read = input.read(buffer)) > 0) {
-          output.write(buffer, 0, read);
-        }
+      Files.copy(input, scriptFile.toPath());
+      if (!scriptFile.setExecutable(true) && !scriptFile.canExecute()) {
+        getLogger()
+            .warning(
+                "Extracted listener script but failed to mark it executable at "
+                    + scriptFile.getAbsolutePath());
       }
       getLogger()
           .info(
@@ -167,18 +167,18 @@ public class ExamplePlugin extends JavaPlugin {
       return;
     }
 
+    final String formattedMessage = ChatColor.RED + "[YouTube] " + ChatColor.WHITE + message;
     if (targetIgn != null && !targetIgn.isEmpty()) {
       Player player = getServer().getPlayerExact(targetIgn);
       if (player != null && player.hasPermission("example.ytstream.monitor")) {
-        player.sendMessage(ChatColor.RED + "[YouTube] " + ChatColor.WHITE + message);
+        player.sendMessage(formattedMessage);
       }
-    } else {
-      for (Player player : getServer().getOnlinePlayers()) {
-        if (player.hasPermission("example.ytstream.monitor")) {
-          player.sendMessage(ChatColor.RED + "[YouTube] " + ChatColor.WHITE + message);
-        }
-      }
+      return;
     }
+
+    getServer().getOnlinePlayers().stream()
+        .filter(player -> player.hasPermission("example.ytstream.monitor"))
+        .forEach(player -> player.sendMessage(formattedMessage));
   }
 
   /** Returns the configured YouTube stream identifier. */

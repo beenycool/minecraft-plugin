@@ -71,10 +71,7 @@ public class YouTubeIntegrationCommand implements CommandExecutor, TabCompleter 
     }
 
     String identifier = args[1];
-    plugin.getConfig().set("youtube.stream-identifier", identifier);
-    plugin.saveConfig();
-    plugin.loadSettingsFromConfig();
-    plugin.restartMonitoring();
+    updateConfigValueAndRestart("youtube.stream-identifier", identifier);
     sender.sendMessage(
         ChatColor.GREEN
             + "YouTube stream identifier set to "
@@ -92,10 +89,7 @@ public class YouTubeIntegrationCommand implements CommandExecutor, TabCompleter 
     }
 
     String ign = args[1];
-    plugin.getConfig().set("youtube.target-player-ign", ign);
-    plugin.saveConfig();
-    plugin.loadSettingsFromConfig();
-    plugin.restartMonitoring();
+    updateConfigValueAndRestart("youtube.target-player-ign", ign);
     sender.sendMessage(
         ChatColor.GREEN
             + "Target player set to "
@@ -104,6 +98,13 @@ public class YouTubeIntegrationCommand implements CommandExecutor, TabCompleter 
             + ChatColor.GREEN
             + ".");
     return true;
+  }
+
+  private void updateConfigValueAndRestart(String key, String value) {
+    plugin.getConfig().set(key, value);
+    plugin.saveConfig();
+    plugin.loadSettingsFromConfig();
+    plugin.restartMonitoring();
   }
 
   private void sendUsage(CommandSender sender, String label) {
@@ -128,9 +129,19 @@ public class YouTubeIntegrationCommand implements CommandExecutor, TabCompleter 
       return matches;
     }
 
-    if (args.length == 2 && "settarget".equalsIgnoreCase(args[0]) && sender instanceof Player) {
-      Player player = (Player) sender;
-      return Collections.singletonList(player.getName());
+    if (args.length == 2 && "settarget".equalsIgnoreCase(args[0])) {
+      String prefix = args[1].toLowerCase();
+      List<String> suggestions = new ArrayList<>();
+      for (Player player : plugin.getServer().getOnlinePlayers()) {
+        String name = player.getName();
+        if (name.toLowerCase().startsWith(prefix)) {
+          suggestions.add(name);
+        }
+      }
+      if (sender instanceof Player && suggestions.isEmpty()) {
+        suggestions.add(((Player) sender).getName());
+      }
+      return suggestions;
     }
 
     return Collections.emptyList();
