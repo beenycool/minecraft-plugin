@@ -77,14 +77,12 @@ public class YouTubeChatBridge {
     command.add(streamIdentifier);
     command.add("--interval");
     command.add(Integer.toString(pollingIntervalSeconds));
-    if (streamlabsToken != null && !streamlabsToken.isBlank()) {
-      command.add("--streamlabs-token");
-      command.add(streamlabsToken);
-    }
-
     ProcessBuilder processBuilder = new ProcessBuilder(command);
     processBuilder.redirectErrorStream(true);
     processBuilder.directory(listenerScript.getParentFile());
+    if (streamlabsToken != null && !streamlabsToken.isBlank()) {
+      processBuilder.environment().put("STREAMLABS_SOCKET_TOKEN", streamlabsToken);
+    }
 
     try {
       process = processBuilder.start();

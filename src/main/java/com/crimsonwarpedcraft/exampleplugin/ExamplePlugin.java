@@ -62,6 +62,9 @@ public class ExamplePlugin extends JavaPlugin {
   private final List<Registration> registrations = new ArrayList<>();
   private final SecureRandom secureRandom = new SecureRandom();
   private BridgeSettings settings;
+  @SuppressFBWarnings(
+      value = "AT_NONATOMIC_64BIT_PRIMITIVE",
+      justification = "Access occurs on the server main thread so atomicity is unnecessary.")
   private long knownSubscriberCount;
   private long lastCelebratedMilestone;
 
@@ -429,7 +432,6 @@ public class ExamplePlugin extends JavaPlugin {
       return;
     }
 
-    String author = Objects.requireNonNullElse(jsonString(payload, "author"), "YouTube Subscriber");
     String ign = jsonString(payload, "inGameName");
     if (ign == null || ign.isBlank()) {
       ign = jsonString(payload, "ign");
@@ -445,6 +447,8 @@ public class ExamplePlugin extends JavaPlugin {
 
     String channelId = jsonString(payload, "channelId");
     Instant timestamp = parseTimestamp(jsonString(payload, "timestamp"));
+    String author =
+        Objects.requireNonNullElse(jsonString(payload, "author"), "YouTube Subscriber");
 
     bridge.emitSubscriberNotification(
         new SubscriberNotification(author, ign, totalSubscribers, channelId, timestamp));
@@ -886,10 +890,17 @@ public class ExamplePlugin extends JavaPlugin {
               .map(String::trim)
               .filter(value -> !value.isEmpty())
               .orElse(DEFAULT_LISTENER_SCRIPT);
-      String streamlabsSocketToken =
-          Optional.ofNullable(root.getString("streamlabs-socket-token"))
+      String environmentToken =
+          Optional.ofNullable(System.getenv("STREAMLABS_SOCKET_TOKEN"))
               .map(String::trim)
-              .orElse("");
+              .filter(value -> !value.isEmpty())
+              .orElse(null);
+      String streamlabsSocketToken =
+          environmentToken != null
+              ? environmentToken
+              : Optional.ofNullable(root.getString("streamlabs-socket-token"))
+                  .map(String::trim)
+                  .orElse("");
 
       return new ListenerSettings(
           streamIdentifier,

@@ -9,6 +9,7 @@ its integration without additional dependencies.
 from __future__ import annotations
 
 import argparse
+import os
 import json
 import re
 import sys
@@ -31,7 +32,7 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--streamlabs-token",
         dest="streamlabs_token",
-        help="Streamlabs Socket API token used to receive subscriber events",
+        help="(Discouraged) Streamlabs token; prefer STREAMLABS_SOCKET_TOKEN env var",
     )
     return parser.parse_args()
 
@@ -144,15 +145,7 @@ def _run_with_pytchat(stream_identifier: str, stop_event: threading.Event) -> No
         for item in chat.get().items:
             author = getattr(item.author, "name", "YouTube")
             channel_id = getattr(item.author, "channelId", None)
-            message_identifier = getattr(item, "id", None)
-            if message_identifier is None:
-                message_identifier = getattr(item, "timestamp", None)
-            message_id = None
-            if message_identifier is not None:
-                try:
-                    message_id = int(message_identifier)
-                except (TypeError, ValueError):
-                    message_id = None
+            message_id = _safe_int(getattr(item, "timestamp", None))
             _emit_chat(author, item.message, channel_id=channel_id, message_id=message_id)
         time.sleep(1)
 
@@ -254,8 +247,8 @@ def _run_streamlabs_listener(token: str, stop_event: threading.Event) -> None:
     finally:
         try:
             sio.disconnect()
-        except Exception:  # pragma: no cover - cleanup best effort
-            pass
+        except Exception as exc:  # pragma: no cover - cleanup best effort
+            _emit_log("Streamlabs disconnect failed", level="warning", error=str(exc))
 
 
 def main() -> int:
@@ -264,9 +257,10 @@ def main() -> int:
     stop_event = threading.Event()
 
     streamlabs_thread: Optional[threading.Thread] = None
-    if args.streamlabs_token:
+    token = args.streamlabs_token or os.environ.get("STREAMLABS_SOCKET_TOKEN")
+    if token:
         streamlabs_thread = threading.Thread(
-            target=_run_streamlabs_listener, args=(args.streamlabs_token, stop_event), daemon=True
+            target=_run_streamlabs_listener, args=(token, stop_event), daemon=True
         )
         streamlabs_thread.start()
 
