@@ -160,14 +160,22 @@ public class ExamplePlugin extends JavaPlugin {
       return;
     }
 
-    ensureListenerScriptAvailable();
+    final String listenerUrl = listenerSettings.listenerUrl();
+    boolean useExternalListener = listenerUrl != null && !listenerUrl.isBlank();
 
-    File listenerScript = getListenerScriptFile();
     String streamIdentifier = listenerSettings.streamIdentifier();
-    if (streamIdentifier == null || streamIdentifier.isBlank()) {
+    if (!useExternalListener && (streamIdentifier == null || streamIdentifier.isBlank())) {
       getLogger().warning("No YouTube stream identifier configured; skipping listener start.");
       stopListenerProcessAsync(process, null);
       return;
+    }
+
+    final File listenerScript;
+    if (!useExternalListener) {
+      ensureListenerScriptAvailable();
+      listenerScript = getListenerScriptFile();
+    } else {
+      listenerScript = null;
     }
 
     String targetIgn = listenerSettings.targetIgn();
@@ -186,7 +194,8 @@ public class ExamplePlugin extends JavaPlugin {
                 streamIdentifier,
                 listenerSettings.pollingIntervalSeconds(),
                 finalTarget,
-                listenerSettings.streamlabsSocketToken()));
+                listenerSettings.streamlabsSocketToken(),
+                listenerUrl));
   }
 
   private void startListenerProcess(
@@ -196,7 +205,10 @@ public class ExamplePlugin extends JavaPlugin {
       String streamIdentifier,
       int pollingIntervalSeconds,
       String targetIgn,
-      String streamlabsToken) {
+      String streamlabsToken,
+      String listenerUrl) {
+    final File scriptRef = listenerScript;
+    final String urlRef = listenerUrl;
     try {
       getServer()
           .getScheduler()
@@ -206,11 +218,12 @@ public class ExamplePlugin extends JavaPlugin {
                 try {
                   process.start(
                       pythonExecutable,
-                      listenerScript,
+                      scriptRef,
                       streamIdentifier,
                       pollingIntervalSeconds,
                       targetIgn,
-                      streamlabsToken);
+                      streamlabsToken,
+                      urlRef);
                 } catch (Exception e) {
                   getLogger().log(Level.SEVERE, "Failed to start listener process", e);
                 }
@@ -219,11 +232,12 @@ public class ExamplePlugin extends JavaPlugin {
       try {
         process.start(
             pythonExecutable,
-            listenerScript,
+            scriptRef,
             streamIdentifier,
             pollingIntervalSeconds,
             targetIgn,
-            streamlabsToken);
+            streamlabsToken,
+            urlRef);
       } catch (Exception e) {
         getLogger().log(Level.SEVERE, "Failed to start listener process", e);
       }
@@ -863,6 +877,7 @@ public class ExamplePlugin extends JavaPlugin {
       int pollingIntervalSeconds,
       String pythonExecutable,
       String listenerScript,
+      String listenerUrl,
       String streamlabsSocketToken) {
 
     static ListenerSettings from(FileConfiguration config) {
@@ -890,6 +905,11 @@ public class ExamplePlugin extends JavaPlugin {
               .map(String::trim)
               .filter(value -> !value.isEmpty())
               .orElse(DEFAULT_LISTENER_SCRIPT);
+      String listenerUrl =
+          Optional.ofNullable(root.getString("listener-url"))
+              .map(String::trim)
+              .filter(value -> !value.isEmpty())
+              .orElse("");
       String environmentToken =
           Optional.ofNullable(System.getenv("STREAMLABS_SOCKET_TOKEN"))
               .map(String::trim)
@@ -908,6 +928,7 @@ public class ExamplePlugin extends JavaPlugin {
           pollingInterval,
           pythonExecutable,
           listenerScript,
+          listenerUrl,
           streamlabsSocketToken);
     }
   }

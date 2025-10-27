@@ -9,15 +9,23 @@ its integration without additional dependencies.
 from __future__ import annotations
 
 import argparse
-import os
+import http.server
 import json
+import os
 import re
+import socketserver
 import sys
 import threading
 import time
 from datetime import datetime
-from typing import Any, Dict, Iterable, Optional
+from queue import Empty, Full, Queue
+from typing import Any, Dict, Iterable, List, Optional, Tuple
 from urllib.parse import parse_qs, urlparse
+
+
+MAX_HTTP_QUEUE = 10000  # prevent unbounded growth if clients stop polling
+EVENT_QUEUE: "Queue[str]" = Queue(maxsize=MAX_HTTP_QUEUE)
+HTTP_PUBLISH_ENABLED = False
 
 
 def _parse_args() -> argparse.Namespace:
@@ -34,17 +42,182 @@ def _parse_args() -> argparse.Namespace:
         dest="streamlabs_token",
         help="(Discouraged) Streamlabs token; prefer STREAMLABS_SOCKET_TOKEN env var",
     )
+    parser.add_argument(
+        "--http-endpoint",
+        dest="http_endpoint",
+        help=(
+            "Optional host:port or URL for an HTTP polling endpoint "
+            "(e.g. 127.0.0.1:8081 or localhost:8081)"
+        ),
+    )
+    parser.add_argument(
+        "--http-path-prefix",
+        dest="http_path_prefix",
+        default="/",
+        help="Optional path prefix to serve polling requests from (defaults to /)",
+    )
     return parser.parse_args()
 
 
 def _emit(message: str) -> None:
     sys.stdout.write(message + "\n")
     sys.stdout.flush()
+    _queue_event(message)
 
 
 def _emit_json(payload: Dict[str, Any]) -> None:
-    sys.stdout.write(json.dumps(payload, ensure_ascii=False) + "\n")
+    message = json.dumps(payload, ensure_ascii=False)
+    sys.stdout.write(message + "\n")
     sys.stdout.flush()
+    _queue_event(message)
+
+
+def _queue_event(message: str) -> None:
+    if not HTTP_PUBLISH_ENABLED:
+        return
+    try:
+        EVENT_QUEUE.put_nowait(message)
+    except Full:
+        # Drop the oldest entry to preserve recent events without blocking producers.
+        try:
+            EVENT_QUEUE.get_nowait()
+        except Empty:
+            pass
+        try:
+            EVENT_QUEUE.put_nowait(message)
+        except Full:
+            # If we still cannot enqueue, drop the event silently.
+            pass
+
+
+def _parse_http_endpoint(endpoint: str) -> Tuple[str, int]:
+    if not endpoint:
+        raise ValueError("HTTP endpoint cannot be empty")
+
+    parsed = urlparse(endpoint if "://" in endpoint else f"http://{endpoint}")
+    host = parsed.hostname or "127.0.0.1"
+    port = parsed.port
+    if port is None:
+        raise ValueError("HTTP endpoint must include a port")
+    return host, port
+
+
+def _normalize_http_path(prefix: str) -> str:
+    if not prefix:
+        return "/"
+
+    sanitized = prefix.strip()
+    if not sanitized.startswith("/"):
+        sanitized = f"/{sanitized}"
+
+    if len(sanitized) > 1 and sanitized.endswith("/"):
+        sanitized = sanitized.rstrip("/")
+
+    return sanitized or "/"
+
+
+def _start_http_server(
+    endpoint: str, stop_event: threading.Event, path_prefix: str
+) -> threading.Thread:
+    global HTTP_PUBLISH_ENABLED
+
+    host, port = _parse_http_endpoint(endpoint)
+    normalized_prefix = _normalize_http_path(path_prefix)
+    allowed_paths = {normalized_prefix, f"{normalized_prefix}/events"}
+    if normalized_prefix == "/":
+        allowed_paths.add("/events")
+
+    class _PollingHandler(http.server.BaseHTTPRequestHandler):
+        server_version = "YouTubeChatListener/1.0"
+
+        def do_GET(self) -> None:  # pragma: no cover - network integration
+            path = urlparse(self.path).path
+            if path not in allowed_paths:
+                self.send_error(404, "Not Found")
+                return
+
+            messages: List[str] = []
+            while True:
+                try:
+                    messages.append(EVENT_QUEUE.get_nowait())
+                except Empty:
+                    break
+                except Exception as exc:  # pragma: no cover - defensive guard
+                    self.log_error("Error getting event from queue: %s", str(exc))
+                    self.send_error(500, "Internal Server Error")
+                    return
+
+            if not messages:
+                self.send_response(204)
+                self.send_header("Cache-Control", "no-store")
+                self.send_header("Content-Length", "0")
+                self.end_headers()
+                return
+
+            body = "\n".join(messages) + "\n"
+            data = body.encode("utf-8")
+            self.send_response(200)
+            self.send_header("Content-Type", "text/plain; charset=utf-8")
+            self.send_header("Content-Length", str(len(data)))
+            self.send_header("Cache-Control", "no-store")
+            self.send_header("X-Accel-Buffering", "no")
+            self.end_headers()
+            try:
+                self.wfile.write(data)
+            except BrokenPipeError:  # pragma: no cover - depends on client
+                pass
+
+        def do_HEAD(self) -> None:  # pragma: no cover - network integration
+            path = urlparse(self.path).path
+            if path not in allowed_paths:
+                self.send_error(404, "Not Found")
+                return
+
+            self.send_response(204)
+            self.send_header("Cache-Control", "no-store")
+            self.send_header("X-Accel-Buffering", "no")
+            self.send_header("Content-Length", "0")
+            self.end_headers()
+
+        def log_message(self, format: str, *args: Any) -> None:  # pragma: no cover - silence logs
+            return
+
+    class _ThreadedServer(socketserver.ThreadingMixIn, http.server.HTTPServer):
+        daemon_threads = True
+        allow_reuse_address = True
+
+    server = _ThreadedServer((host, port), _PollingHandler)
+
+    def _serve() -> None:  # pragma: no cover - integration with Minecraft
+        with server:
+            server.serve_forever(poll_interval=0.5)
+
+    thread = threading.Thread(target=_serve, name="YouTubeChatListenerHTTP", daemon=True)
+    thread.start()
+
+    def _shutdown_on_stop() -> None:  # pragma: no cover - integration cleanup
+        global HTTP_PUBLISH_ENABLED
+        stop_event.wait()
+        try:
+            server.shutdown()
+        except Exception as exc:  # pragma: no cover - depends on runtime state
+            _emit_log("HTTP server shutdown failed", level="warning", error=str(exc))
+        finally:
+            server.server_close()
+            HTTP_PUBLISH_ENABLED = False
+
+    threading.Thread(target=_shutdown_on_stop, name="YouTubeChatListenerHTTP-Shutdown", daemon=True).start()
+
+    HTTP_PUBLISH_ENABLED = True
+    base_url = f"http://{host}:{port}{normalized_prefix}"
+    events_path = f"{normalized_prefix.rstrip('/')}/events" if normalized_prefix != "/" else "/events"
+    _emit_log(
+        "HTTP polling endpoint started",
+        level="info",
+        url=f"{base_url.rstrip('/') or base_url}",
+        eventsUrl=f"http://{host}:{port}{events_path}",
+    )
+    return thread
 
 
 def _timestamp() -> str:
@@ -256,6 +429,17 @@ def main() -> int:
     stream_identifier = _normalize_stream_identifier(args.stream)
     stop_event = threading.Event()
 
+    http_thread: Optional[threading.Thread] = None
+    if args.http_endpoint:
+        try:
+            http_thread = _start_http_server(
+                args.http_endpoint, stop_event, args.http_path_prefix
+            )
+        except ValueError as exc:
+            _emit_error("Invalid HTTP endpoint", error=str(exc))
+        except OSError as exc:
+            _emit_error("Failed to start HTTP endpoint", error=str(exc))
+
     streamlabs_thread: Optional[threading.Thread] = None
     token = args.streamlabs_token or os.environ.get("STREAMLABS_SOCKET_TOKEN")
     if token:
@@ -283,6 +467,8 @@ def main() -> int:
         stop_event.set()
         if streamlabs_thread is not None:
             streamlabs_thread.join(timeout=5.0)
+        if http_thread is not None:
+            http_thread.join(timeout=5.0)
 
     return 0
 

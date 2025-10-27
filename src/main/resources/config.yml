@@ -10,6 +10,11 @@ youtube:
   python-executable: "python3"
   # Relative to the plugin data folder; defaults to the bundled script if missing.
   listener-script: "python/chat_listener.py"
+  # Optional HTTP endpoint exposed by an externally hosted listener. When set, the plugin will
+  # poll this URL instead of launching the bundled Python script. Responses should be newline
+  # separated messages (matching the stdout output of chat_listener.py). Include the full path,
+  # e.g. https://example.hackclub.app/yt-listener/events when reverse proxied through Caddy.
+  listener-url: ""
   # Optional Streamlabs Socket API token used to receive subscriber notifications.
   streamlabs-socket-token: ""
 
