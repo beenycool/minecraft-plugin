@@ -38,6 +38,36 @@ A template for building PaperMC/Spigot Minecraft server plugins!
 ## Usage
 In order to use this template for yourself, there are a few things that you will need to keep in mind.
 
+### Hosting the YouTube chat listener remotely
+The bundled `chat_listener.py` script can be deployed on another machine and exposed over HTTP so
+your Minecraft server only needs to poll a public URL. This is especially handy when you host the
+listener on Hack Club's Nest platform where Caddy is provided out of the box.
+
+1. Copy `src/main/resources/python/chat_listener.py` to the machine that will run the listener.
+2. Install the optional dependencies you need (for example `pytchat` and `python-socketio`).
+3. Decide on a directory for the service (e.g. `/opt/youtube-listener`) and place the script there.
+4. (Optional) Create `/etc/youtube-listener.env` and set any secrets such as
+   `STREAMLABS_SOCKET_TOKEN=...`.
+5. Install the sample systemd unit from [`config/systemd/youtube-chat-listener.service`](config/systemd/youtube-chat-listener.service)
+   and adjust the `WorkingDirectory`, `ExecStart`, `User` and `Group` directives to match your
+   environment. Reload the systemd daemon and enable the service:
+
+   ```bash
+   sudo cp config/systemd/youtube-chat-listener.service /etc/systemd/system/
+   sudo systemctl daemon-reload
+   sudo systemctl enable --now youtube-chat-listener.service
+   ```
+
+6. When running behind Nest's Caddy instance, configure a reverse proxy so the listener is available
+   on your public subdomain. The example [`config/caddy/youtube-listener.Caddyfile`](config/caddy/youtube-listener.Caddyfile)
+   targets a listener bound to `127.0.0.1:8081` using the path prefix `/yt-listener`. After updating
+   the domain and paths, reload Caddy: `systemctl --user reload caddy`.
+
+The listener now understands the `--http-path-prefix` flag, allowing it to serve multiple paths such
+as `/yt-listener` and `/yt-listener/events`, which plays nicely with Caddy route matchers. In the
+plugin's `config.yml`, set `youtube.listener-url` to the HTTPS URL that Caddy exposes (for example
+`https://example.hackclub.app/yt-listener/events`).
+
 ### Release Info
 #### PaperMC Version Mapping
 Here's a list of the PaperMC versions and the versions of this latest compatible version.

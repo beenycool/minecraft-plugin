@@ -1,0 +1,22 @@
+[Unit]
+Description=YouTube Chat Listener bridge for Minecraft plugin
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+# Update the following paths to match where you've placed chat_listener.py and your virtualenv.
+WorkingDirectory=/opt/youtube-listener
+ExecStart=/usr/bin/env python3 /opt/youtube-listener/chat_listener.py \
+    --stream ${YOUTUBE_STREAM_IDENTIFIER} \
+    --http-endpoint 127.0.0.1:8081 \
+    --http-path-prefix /yt-listener
+# Optionally load sensitive configuration values like STREAMLABS_SOCKET_TOKEN.
+EnvironmentFile=-/etc/youtube-listener.env
+Restart=on-failure
+RestartSec=5
+User=mc
+Group=mc
+
+[Install]
+WantedBy=default.target
