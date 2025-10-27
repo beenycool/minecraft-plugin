@@ -18,12 +18,13 @@ import sys
 import threading
 import time
 from datetime import datetime
-from queue import Empty, Queue
-from typing import Any, Dict, Iterable, Optional, Tuple
+from queue import Empty, Full, Queue
+from typing import Any, Dict, Iterable, List, Optional, Tuple
 from urllib.parse import parse_qs, urlparse
 
 
-EVENT_QUEUE: "Queue[str]" = Queue()
+MAX_HTTP_QUEUE = 10000  # prevent unbounded growth if clients stop polling
+EVENT_QUEUE: "Queue[str]" = Queue(maxsize=MAX_HTTP_QUEUE)
 HTTP_PUBLISH_ENABLED = False
 
 
@@ -44,7 +45,10 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--http-endpoint",
         dest="http_endpoint",
-        help="Optional host:port or URL for an HTTP polling endpoint (e.g. 0.0.0.0:8081)",
+        help=(
+            "Optional host:port or URL for an HTTP polling endpoint "
+            "(e.g. 127.0.0.1:8081 or localhost:8081)"
+        ),
     )
     parser.add_argument(
         "--http-path-prefix",
@@ -71,7 +75,19 @@ def _emit_json(payload: Dict[str, Any]) -> None:
 def _queue_event(message: str) -> None:
     if not HTTP_PUBLISH_ENABLED:
         return
-    EVENT_QUEUE.put_nowait(message)
+    try:
+        EVENT_QUEUE.put_nowait(message)
+    except Full:
+        # Drop the oldest entry to preserve recent events without blocking producers.
+        try:
+            EVENT_QUEUE.get_nowait()
+        except Empty:
+            pass
+        try:
+            EVENT_QUEUE.put_nowait(message)
+        except Full:
+            # If we still cannot enqueue, drop the event silently.
+            pass
 
 
 def _parse_http_endpoint(endpoint: str) -> Tuple[str, int]:
@@ -79,7 +95,7 @@ def _parse_http_endpoint(endpoint: str) -> Tuple[str, int]:
         raise ValueError("HTTP endpoint cannot be empty")
 
     parsed = urlparse(endpoint if "://" in endpoint else f"http://{endpoint}")
-    host = parsed.hostname or "0.0.0.0"
+    host = parsed.hostname or "127.0.0.1"
     port = parsed.port
     if port is None:
         raise ValueError("HTTP endpoint must include a port")
@@ -120,16 +136,21 @@ def _start_http_server(
                 self.send_error(404, "Not Found")
                 return
 
-            messages: list[str] = []
+            messages: List[str] = []
             while True:
                 try:
                     messages.append(EVENT_QUEUE.get_nowait())
                 except Empty:
                     break
+                except Exception as exc:  # pragma: no cover - defensive guard
+                    self.log_error("Error getting event from queue: %s", str(exc))
+                    self.send_error(500, "Internal Server Error")
+                    return
 
             if not messages:
                 self.send_response(204)
                 self.send_header("Cache-Control", "no-store")
+                self.send_header("Content-Length", "0")
                 self.end_headers()
                 return
 
@@ -155,6 +176,7 @@ def _start_http_server(
             self.send_response(204)
             self.send_header("Cache-Control", "no-store")
             self.send_header("X-Accel-Buffering", "no")
+            self.send_header("Content-Length", "0")
             self.end_headers()
 
         def log_message(self, format: str, *args: Any) -> None:  # pragma: no cover - silence logs
@@ -162,6 +184,7 @@ def _start_http_server(
 
     class _ThreadedServer(socketserver.ThreadingMixIn, http.server.HTTPServer):
         daemon_threads = True
+        allow_reuse_address = True
 
     server = _ThreadedServer((host, port), _PollingHandler)
 
@@ -177,8 +200,8 @@ def _start_http_server(
         stop_event.wait()
         try:
             server.shutdown()
-        except Exception:
-            pass
+        except Exception as exc:  # pragma: no cover - depends on runtime state
+            _emit_log("HTTP server shutdown failed", level="warning", error=str(exc))
         finally:
             server.server_close()
             HTTP_PUBLISH_ENABLED = False

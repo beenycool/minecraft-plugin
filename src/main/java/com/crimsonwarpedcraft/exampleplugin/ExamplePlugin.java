@@ -163,19 +163,19 @@ public class ExamplePlugin extends JavaPlugin {
     final String listenerUrl = listenerSettings.listenerUrl();
     boolean useExternalListener = listenerUrl != null && !listenerUrl.isBlank();
 
+    String streamIdentifier = listenerSettings.streamIdentifier();
+    if (!useExternalListener && (streamIdentifier == null || streamIdentifier.isBlank())) {
+      getLogger().warning("No YouTube stream identifier configured; skipping listener start.");
+      stopListenerProcessAsync(process, null);
+      return;
+    }
+
     final File listenerScript;
     if (!useExternalListener) {
       ensureListenerScriptAvailable();
       listenerScript = getListenerScriptFile();
     } else {
       listenerScript = null;
-    }
-
-    String streamIdentifier = listenerSettings.streamIdentifier();
-    if (!useExternalListener && (streamIdentifier == null || streamIdentifier.isBlank())) {
-      getLogger().warning("No YouTube stream identifier configured; skipping listener start.");
-      stopListenerProcessAsync(process, null);
-      return;
     }
 
     String targetIgn = listenerSettings.targetIgn();

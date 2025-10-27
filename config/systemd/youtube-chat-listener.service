@@ -13,10 +13,15 @@ ExecStart=/usr/bin/env python3 /opt/youtube-listener/chat_listener.py \
     --http-path-prefix /yt-listener
 # Optionally load sensitive configuration values like STREAMLABS_SOCKET_TOKEN.
 EnvironmentFile=-/etc/youtube-listener.env
+Environment=PYTHONUNBUFFERED=1
 Restart=on-failure
 RestartSec=5
 User=mc
 Group=mc
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=full
+ProtectHome=read-only
 
 [Install]
-WantedBy=default.target
+WantedBy=multi-user.target

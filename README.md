@@ -50,7 +50,9 @@ listener on Hack Club's Nest platform where Caddy is provided out of the box.
    `STREAMLABS_SOCKET_TOKEN=...`.
 5. Install the sample systemd unit from [`config/systemd/youtube-chat-listener.service`](config/systemd/youtube-chat-listener.service)
    and adjust the `WorkingDirectory`, `ExecStart`, `User` and `Group` directives to match your
-   environment. Reload the systemd daemon and enable the service:
+   environment. The example unit is intended for a system service; if you prefer a user service,
+   place it under `~/.config/systemd/user/` and adjust the commands accordingly. Reload the systemd
+   daemon and enable the service:
 
    ```bash
    sudo cp config/systemd/youtube-chat-listener.service /etc/systemd/system/
@@ -60,8 +62,12 @@ listener on Hack Club's Nest platform where Caddy is provided out of the box.
 
 6. When running behind Nest's Caddy instance, configure a reverse proxy so the listener is available
    on your public subdomain. The example [`config/caddy/youtube-listener.Caddyfile`](config/caddy/youtube-listener.Caddyfile)
-   targets a listener bound to `127.0.0.1:8081` using the path prefix `/yt-listener`. After updating
-   the domain and paths, reload Caddy: `systemctl --user reload caddy`.
+   targets a listener bound to `127.0.0.1:8081` using the path prefix `/yt-listener`. Replace the
+   placeholder domain with your actual host name (without an `http://` prefix) so Caddy can obtain
+   certificates automatically, then reload Caddy: `sudo systemctl reload caddy`.
+
+> ℹ️ For local development you can temporarily use `http://localhost`, but for public deployments
+> you should rely on Caddy's automatic HTTPS to keep the listener secured.
 
 The listener now understands the `--http-path-prefix` flag, allowing it to serve multiple paths such
 as `/yt-listener` and `/yt-listener/events`, which plays nicely with Caddy route matchers. In the

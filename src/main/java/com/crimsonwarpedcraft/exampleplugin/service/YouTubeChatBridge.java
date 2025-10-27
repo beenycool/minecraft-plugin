@@ -14,6 +14,7 @@ import java.nio.charset.StandardCharsets;
 import java.time.Duration;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Locale;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
@@ -29,7 +30,7 @@ public class YouTubeChatBridge {
   private final ExamplePlugin plugin;
   private Process process;
   private ExecutorService outputReader;
-  private HttpClient httpClient;
+  private volatile HttpClient httpClient;
   private BukkitTask pollingTask;
   private final AtomicBoolean pollInFlight = new AtomicBoolean(false);
   private int consecutivePollFailures;
@@ -202,7 +203,7 @@ public class YouTubeChatBridge {
     httpClient =
         HttpClient.newBuilder()
             .connectTimeout(Duration.ofSeconds(5))
-            .followRedirects(HttpClient.Redirect.NORMAL)
+            .followRedirects(HttpClient.Redirect.NEVER)
             .build();
     consecutivePollFailures = 0;
     pollInFlight.set(false);
@@ -210,6 +211,11 @@ public class YouTubeChatBridge {
     Runnable poller = () -> pollEndpoint(endpoint, targetIgn);
 
     long intervalTicks = Math.max(20L, pollingIntervalSeconds * 20L);
+    double intervalSeconds = intervalTicks / 20.0d;
+    String intervalLabel =
+        intervalTicks % 20L == 0
+            ? (intervalTicks / 20L) + "s"
+            : String.format(Locale.ROOT, "%.1fs", intervalSeconds);
     try {
       pollingTask =
           plugin
@@ -218,8 +224,12 @@ public class YouTubeChatBridge {
               .runTaskTimerAsynchronously(plugin, poller, 0L, intervalTicks);
       plugin
           .getLogger()
-          .info("Polling external YouTube listener at " + listenerUrl + " every "
-              + pollingIntervalSeconds + "s.");
+          .info(
+              "Polling external YouTube listener at "
+                  + listenerUrl
+                  + " every "
+                  + intervalLabel
+                  + ".");
     } catch (IllegalStateException schedulerShutdown) {
       plugin
           .getLogger()
@@ -229,7 +239,8 @@ public class YouTubeChatBridge {
   }
 
   private void pollEndpoint(URI endpoint, String targetIgn) {
-    if (httpClient == null) {
+    HttpClient client = httpClient;
+    if (client == null) {
       return;
     }
 
@@ -245,7 +256,7 @@ public class YouTubeChatBridge {
               .header("Cache-Control", "no-cache")
               .build();
       HttpResponse<String> response =
-          httpClient.send(request, HttpResponse.BodyHandlers.ofString(StandardCharsets.UTF_8));
+          client.send(request, HttpResponse.BodyHandlers.ofString(StandardCharsets.UTF_8));
 
       int status = response.statusCode();
       if (status == 204) {

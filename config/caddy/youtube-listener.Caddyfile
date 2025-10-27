@@ -1,14 +1,13 @@
 # Example Caddyfile snippet for exposing the chat listener via Caddy.
-# Replace example.hackclub.app with your actual domain.
-http://example.hackclub.app {
+# Replace example.hackclub.app with your actual domain (without an http:// prefix).
+example.hackclub.app {
     encode zstd gzip
     @events {
         path /yt-listener /yt-listener/events
     }
     reverse_proxy @events 127.0.0.1:8081 {
         transport http {
-            versions h1 h2c
+            versions h1
         }
-        header_up Host {host}
     }
 }
