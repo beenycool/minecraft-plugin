@@ -286,7 +286,10 @@ public class YouTubeChatBridge {
           } catch (IllegalStateException schedulerShutdown) {
             plugin
                 .getLogger()
-                .log(Level.FINE, "Server scheduler unavailable while delivering message", schedulerShutdown);
+                .log(
+                    Level.FINE,
+                    "Server scheduler unavailable while delivering message",
+                    schedulerShutdown);
           }
         }
         return;
