@@ -1,0 +1,8 @@
+# Optional dependencies for YouTube chat listener
+# Install with: pip install -r requirements.txt
+
+# For actual YouTube chat integration (optional)
+pytchat
+
+# For Streamlabs subscriber events (optional)
+python-socketio

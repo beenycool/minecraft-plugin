@@ -21,15 +21,14 @@ from datetime import datetime
 from queue import Empty, Full, Queue
 from typing import Any, Dict, Iterable, List, Optional, Tuple
 from urllib.parse import parse_qs, urlparse
+from http.cookiejar import MozillaCookieJar
+
+import httpx
 
 
 MAX_HTTP_QUEUE = 10000  # prevent unbounded growth if clients stop polling
 EVENT_QUEUE: "Queue[str]" = Queue(maxsize=MAX_HTTP_QUEUE)
 HTTP_PUBLISH_ENABLED = False
-
-
-class YouTubeStreamUnavailableError(RuntimeError):
-    """Raised when a YouTube stream cannot be reached or initialized."""
 
 
 def _parse_args() -> argparse.Namespace:
@@ -59,6 +58,11 @@ def _parse_args() -> argparse.Namespace:
         dest="http_path_prefix",
         default="/",
         help="Optional path prefix to serve polling requests from (defaults to /)",
+    )
+    parser.add_argument(
+        "--cookies",
+        dest="cookies_path",
+        help="Optional path to a Netscape-format cookies.txt file for authenticated access",
     )
     return parser.parse_args()
 
@@ -313,15 +317,45 @@ def _emit_subscriber(
         payload["raw"] = raw
     _emit_json(payload)
 
+def _load_cookies(cookies_path: str) -> httpx.Cookies:
+    jar = MozillaCookieJar()
+    if not os.path.exists(cookies_path):
+        raise FileNotFoundError(cookies_path)
+    jar.load(cookies_path, ignore_discard=True, ignore_expires=True)
+    cookies = httpx.Cookies()
+    for cookie in jar:
+        name = cookie.name
+        value = cookie.value
+        domain = cookie.domain or ""
+        path = cookie.path or "/"
+        cookies.set(name, value, domain=domain, path=path)
+    return cookies
 
-def _run_with_pytchat(stream_identifier: str, stop_event: threading.Event) -> None:
+
+def _build_http_client(cookies_path: str) -> httpx.Client:
+    cookies = _load_cookies(cookies_path)
+    headers: Optional[Dict[str, str]] = None
+    try:
+        import pytchat  # type: ignore
+
+        headers = getattr(pytchat.config, "headers", None)
+    except Exception:
+        headers = None
+    return httpx.Client(http2=True, cookies=cookies, headers=headers)
+
+
+def _run_with_pytchat(
+    stream_identifier: str,
+    stop_event: threading.Event,
+    http_client: Optional[httpx.Client],
+) -> None:
     import pytchat
 
-    try:
-        chat = pytchat.create(video_id=stream_identifier)
-    except Exception as exc:
-        raise YouTubeStreamUnavailableError(str(exc)) from exc
+    create_kwargs: Dict[str, Any] = {}
+    if http_client is not None:
+        create_kwargs["client"] = http_client
 
+    chat = pytchat.create(video_id=stream_identifier, **create_kwargs)
     try:
         while not stop_event.is_set() and chat.is_alive():
             for item in chat.get().items:
@@ -329,20 +363,17 @@ def _run_with_pytchat(stream_identifier: str, stop_event: threading.Event) -> No
                 channel_id = getattr(item.author, "channelId", None)
                 message_id = _safe_int(getattr(item, "timestamp", None))
                 _emit_chat(
-                    author, item.message, channel_id=channel_id, message_id=message_id
+                    author,
+                    item.message,
+                    channel_id=channel_id,
+                    message_id=message_id,
                 )
             time.sleep(1)
-    except KeyboardInterrupt:
-        raise
-    except Exception as exc:
-        raise YouTubeStreamUnavailableError(str(exc)) from exc
-
-
-def _run_placeholder(stream_identifier: str, interval: int, stop_event: threading.Event) -> None:
-    _emit_chat("YouTube", f"Simulated relay for {stream_identifier}")
-    while not stop_event.is_set():
-        time.sleep(interval)
-        _emit_log("Heartbeat", stream="placeholder", streamIdentifier=stream_identifier)
+    finally:
+        try:
+            chat.terminate()
+        except Exception:
+            pass
 
 
 def _safe_int(value: Any) -> Optional[int]:
@@ -443,6 +474,22 @@ def main() -> int:
     args = _parse_args()
     stream_identifier = _normalize_stream_identifier(args.stream)
     stop_event = threading.Event()
+    cookies_path: Optional[str] = args.cookies_path or os.environ.get("YOUTUBE_COOKIES_PATH")
+    if cookies_path:
+        cookies_path = os.path.expanduser(cookies_path)
+        if not os.path.isabs(cookies_path):
+            cookies_path = os.path.abspath(cookies_path)
+
+    http_client: Optional[httpx.Client] = None
+    if cookies_path:
+        try:
+            http_client = _build_http_client(cookies_path)
+            if http_client is not None:
+                _emit_log("Loaded YouTube cookies", path=cookies_path)
+        except FileNotFoundError:
+            _emit_error("Cookie file not found", path=cookies_path)
+        except Exception as exc:  # pragma: no cover - defensive logging
+            _emit_error("Failed to load cookies", path=cookies_path, error=str(exc))
 
     http_thread: Optional[threading.Thread] = None
     if args.http_endpoint:
@@ -463,37 +510,38 @@ def main() -> int:
         )
         streamlabs_thread.start()
 
+    exit_code = 0
     try:
-        try:
-            _run_with_pytchat(stream_identifier, stop_event)
-        except ModuleNotFoundError:
-            _emit_log(
-                "pytchat not installed; using placeholder output",
-                level="warning",
-                streamIdentifier=stream_identifier,
-            )
-            _run_placeholder(stream_identifier, args.interval, stop_event)
-        except YouTubeStreamUnavailableError as exc:
-            _emit_log(
-                "Unable to reach YouTube chat; using placeholder output",
-                level="warning",
-                streamIdentifier=stream_identifier,
-                error=str(exc),
-            )
-            _run_placeholder(stream_identifier, args.interval, stop_event)
+        while not stop_event.is_set():
+            try:
+                _run_with_pytchat(stream_identifier, stop_event, http_client)
+                break
+            except ModuleNotFoundError as exc:
+                _emit_error(
+                    "pytchat is not installed; install requirements and restart the listener",
+                    error=str(exc),
+                )
+                exit_code = 1
+                break
+            except Exception as exc:  # pragma: no cover - defensive logging
+                _emit_error("Unhandled listener error", error=str(exc))
+                if stop_event.wait(10):
+                    break
     except KeyboardInterrupt:
-        return 0
-    except Exception as exc:  # pragma: no cover - defensive logging
-        _emit_error("Unhandled listener error", error=str(exc))
-        return 1
+        exit_code = 0
     finally:
         stop_event.set()
         if streamlabs_thread is not None:
             streamlabs_thread.join(timeout=5.0)
         if http_thread is not None:
             http_thread.join(timeout=5.0)
+        if http_client is not None:
+            try:
+                http_client.close()
+            except Exception:
+                pass
 
-    return 0
+    return exit_code
 
 
 if __name__ == "__main__":
