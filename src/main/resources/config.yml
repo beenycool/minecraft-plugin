@@ -1,9 +1,9 @@
 # Configuration for the YouTube stream chat integration
 youtube:
   # Required YouTube live chat identifier or URL used by the external listener.
-  stream-identifier: ""
+  stream-identifier: "Fk8CXm_A_NE"
   # Optional player IGN to receive direct messages; kept in sync with youtube-bridge.target-player.
-  target-player-ign: ""
+  target-player-ign: "r4kz"
   # Polling cadence for the Python listener (seconds, minimum of 1).
   polling-interval-seconds: 5
   # Python interpreter on the host (Windows servers may prefer "python" or an absolute path).
@@ -14,12 +14,12 @@ youtube:
   # poll this URL instead of launching the bundled Python script. Responses should be newline
   # separated messages (matching the stdout output of chat_listener.py). Include the full path,
   # e.g. https://example.hackclub.app/yt-listener/events when reverse proxied through Caddy.
-  listener-url: ""
+  listener-url: "https://beeny.hackclub.app/yt-listener/events"
   # Optional Streamlabs Socket API token used to receive subscriber notifications.
   streamlabs-socket-token: ""
 
 world-reset:
-  interval-hours: 5
+  interval-hours: 3
   holding:
     world: world
     x: 0.5
@@ -36,7 +36,7 @@ world-reset:
     - "say World reset completed"
 youtube-bridge:
   enabled: true
-  target-player: ""
+  target-player: "r4kz"
   allowed-worlds: []
   chat:
     enabled: true
