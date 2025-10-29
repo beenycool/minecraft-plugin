@@ -44,6 +44,7 @@ import org.bukkit.entity.TNTPrimed;
 import org.bukkit.plugin.java.JavaPlugin;
 import org.bukkit.scheduler.BukkitRunnable;
 import org.bukkit.util.Vector;
+import org.jetbrains.annotations.NotNull;
 
 /**
  * Example plugin entry point that wires the YouTube bridge behaviours together.
@@ -376,12 +377,12 @@ public class ExamplePlugin extends JavaPlugin {
       return "";
     }
 
-    String safeDonor = donor == null ? "" : donor;
-    String numericAmount =
-        amount == null ? "" : String.format(Locale.US, "%.2f", amount.doubleValue());
-    String safeCurrency = currency == null ? "" : currency.toUpperCase(Locale.ROOT);
-    String safeMessage = message == null ? "" : message;
-    String formatted = formatAmountText(amount, currency, formattedAmount);
+    final String safeDonor = donor == null ? "" : donor;
+    final String numericAmount =
+        amount == null ? "" : String.format(Locale.US, "%.2f", amount);
+    final String safeCurrency = currency == null ? "" : currency.toUpperCase(Locale.ROOT);
+    final String safeMessage = message == null ? "" : message;
+    final String formatted = formatAmountText(amount, currency, formattedAmount);
 
     String result = template;
     result = result.replace("{donor}", safeDonor);
@@ -395,13 +396,13 @@ public class ExamplePlugin extends JavaPlugin {
   }
 
   private String applyMilestoneTitlePlaceholders(
-      String template, SubscriberMilestone milestone, int tntCount) {
+      String template, @NotNull SubscriberMilestone milestone, int tntCount) {
     if (template == null) {
       return "";
     }
 
-    long totalSubscribers = milestone == null ? 0L : Math.max(0L, milestone.totalSubscribers());
-    long interval = milestone == null ? 0L : Math.max(0L, milestone.milestoneInterval());
+    long totalSubscribers = Math.max(0L, milestone.totalSubscribers());
+    long interval = Math.max(0L, milestone.milestoneInterval());
     int safeTntCount = Math.max(0, tntCount);
 
     String result = template;
@@ -421,7 +422,7 @@ public class ExamplePlugin extends JavaPlugin {
       return "";
     }
 
-    String numeric = String.format(Locale.US, "%.2f", amount.doubleValue());
+    String numeric = String.format(Locale.US, "%.2f", amount);
     if (currency == null || currency.isBlank()) {
       return numeric;
     }
