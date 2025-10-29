@@ -74,6 +74,27 @@ as `/yt-listener` and `/yt-listener/events`, which plays nicely with Caddy route
 plugin's `config.yml`, set `youtube.listener-url` to the HTTPS URL that Caddy exposes (for example
 `https://example.hackclub.app/yt-listener/events`).
 
+### Browser Overlay for OBS
+When the HTTP endpoint is running, the listener also serves a lightweight overlay that you can add
+as an OBS browser source. Point the source at the `/overlay` path matching your prefix, for example:
+
+```
+http://127.0.0.1:8081/yt-listener/overlay
+```
+
+The overlay polls the `/events` endpoint, formats subscriber alerts in a Streamlabs-like card
+(`{NAME} subscribed! Spawned 1 TNT.`), and shows the latest chat messages. Enable a transparent
+background in OBS and place the browser source wherever you want alerts to appear on stream.
+
+### Donation Orbital Strike
+The plugin now reacts to Streamlabs donation events. By default any $5+ YouTube donation (currency
+match is configurable) unleashes the **Orbital Strike Cannon**: 100 TNT spawns above the configured
+target player and their screen flashes with a custom title. To tweak thresholds or visuals, edit the
+`youtube-bridge.donations` section in `config.yml`—you can change the minimum amount, TNT count,
+spawn height, wave size, or the title text (use placeholders like `{donor}`, `{formatted_amount}`,
+and `{tnt_count}`). Trigger the Streamlabs “Test Donation” button to verify the full pipeline before
+going live.
+
 ### Release Info
 #### PaperMC Version Mapping
 Here's a list of the PaperMC versions and the versions of this latest compatible version.
