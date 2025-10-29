@@ -53,6 +53,8 @@ public class ExamplePlugin extends JavaPlugin {
 
   private static final String DEFAULT_LISTENER_SCRIPT = "python/chat_listener.py";
 
+  private static final int NEAR_INSTANT_FUSE_TICKS = 1;
+
   private final AtomicLong messageSequence = new AtomicLong();
 
   // Fields from codex branch
@@ -384,13 +386,14 @@ public class ExamplePlugin extends JavaPlugin {
     final String safeMessage = message == null ? "" : message;
     final String formatted = formatAmountText(amount, currency, formattedAmount);
 
-    String result = template;
-    result = result.replace("{donor}", safeDonor);
-    result = result.replace("{amount}", numericAmount);
-    result = result.replace("{formatted_amount}", formatted);
-    result = result.replace("{currency}", safeCurrency);
-    result = result.replace("{message}", safeMessage);
-    result = result.replace("{tnt_count}", Integer.toString(Math.max(0, tntCount)));
+    String result =
+        template
+            .replace("{donor}", safeDonor)
+            .replace("{amount}", numericAmount)
+            .replace("{formatted_amount}", formatted)
+            .replace("{currency}", safeCurrency)
+            .replace("{message}", safeMessage)
+            .replace("{tnt_count}", Integer.toString(Math.max(0, tntCount)));
 
     return ChatColor.translateAlternateColorCodes('&', result);
   }
@@ -580,8 +583,7 @@ public class ExamplePlugin extends JavaPlugin {
             .map(String::trim)
             .orElse("");
     if (orbitalStrike.currency() != null && !orbitalStrike.currency().isBlank()) {
-      if (currency.isBlank()
-          || !orbitalStrike.currency().equalsIgnoreCase(currency.trim())) {
+      if (currency.isBlank() || !orbitalStrike.currency().equalsIgnoreCase(currency)) {
         return;
       }
     }
@@ -785,9 +787,6 @@ public class ExamplePlugin extends JavaPlugin {
         }
         if (primitive.isString()) {
           String value = primitive.getAsString();
-          if (value == null) {
-            return null;
-          }
           String trimmed = value.trim();
           if (trimmed.isEmpty()) {
             return null;
@@ -940,7 +939,8 @@ public class ExamplePlugin extends JavaPlugin {
         location,
         TNTPrimed.class,
         tnt -> {
-          tnt.setFuseTicks(Math.max(0, fuseTicks));
+          int adjustedFuseTicks = Math.max(0, Math.min(fuseTicks, NEAR_INSTANT_FUSE_TICKS));
+          tnt.setFuseTicks(adjustedFuseTicks);
         });
   }
 
