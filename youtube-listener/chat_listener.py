@@ -30,6 +30,143 @@ MAX_HTTP_QUEUE = 10000  # prevent unbounded growth if clients stop polling
 EVENT_QUEUE: "Queue[str]" = Queue(maxsize=MAX_HTTP_QUEUE)
 HTTP_PUBLISH_ENABLED = False
 
+OVERLAY_HTML_TEMPLATE = """<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>YouTube Bridge Overlay</title>
+  <style>
+    :root {{
+      color-scheme: light dark;
+    }}
+    body {{
+      margin: 0;
+      padding: 16px;
+      background: rgba(0, 0, 0, 0);
+      font-family: "Segoe UI", "Helvetica Neue", Arial, sans-serif;
+    }}
+    #events {{
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+    }}
+    .line {{
+      padding: 8px 12px;
+      border-radius: 8px;
+      font-weight: 600;
+      font-size: 20px;
+      color: #ffffff;
+      background: rgba(20, 20, 20, 0.65);
+      box-shadow: 0 4px 12px rgba(0, 0, 0, 0.35);
+      text-shadow: 0 2px 4px rgba(0, 0, 0, 0.35);
+      letter-spacing: 0.3px;
+    }}
+    .line.subscriber {{
+      background: linear-gradient(135deg, rgba(255, 215, 0, 0.85), rgba(255, 140, 0, 0.85));
+      color: #201000;
+      text-shadow: none;
+    }}
+    .line.chat {{
+      background: rgba(52, 152, 219, 0.75);
+    }}
+    .line.donation {{
+      background: linear-gradient(135deg, rgba(231, 76, 60, 0.85), rgba(192, 57, 43, 0.85));
+    }}
+    .line.log {{
+      background: rgba(149, 165, 166, 0.6);
+      font-weight: 500;
+    }}
+  </style>
+</head>
+<body>
+  <div id="events"></div>
+  <script>
+    const eventsPath = {events_path_json};
+    const container = document.getElementById("events");
+    const MAX_ITEMS = 8;
+
+    function addLine(text, cssClass) {{
+      const entry = document.createElement("div");
+      entry.className = "line " + (cssClass || "");
+      entry.textContent = text;
+      container.prepend(entry);
+      while (container.children.length > MAX_ITEMS) {{
+        container.removeChild(container.lastChild);
+      }}
+    }}
+
+    function handlePayload(payload) {{
+      if (!payload || typeof payload !== "object") {{
+        return;
+      }}
+      if (payload.type === "subscriber") {{
+        const name = payload.author || "Someone";
+        addLine(`${{name}} subscribed! Spawned 1 TNT.`, "subscriber");
+        return;
+      }}
+      if (payload.type === "donation") {{
+        const donor = payload.author || "Supporter";
+        const rawAmount = typeof payload.amount === "number" ? payload.amount.toFixed(2) : null;
+        const amountText = payload.formattedAmount || (rawAmount ? `${{rawAmount}}${{payload.currency ? ` ${payload.currency}` : ""}}` : "");
+        const suffix = amountText ? ` donated ${{amountText}}` : " donated";
+        addLine(`${{donor}}${{suffix}} - Orbital Strike Cannon online!`, "donation");
+        return;
+      }}
+      if (payload.type === "chat") {{
+        const author = payload.author || "YouTube";
+        const message = payload.message || "";
+        addLine(`${{author}}: ${{message}}`, "chat");
+        return;
+      }}
+      if (payload.type === "log") {{
+        addLine(payload.message || "Log event", "log");
+      }}
+    }}
+
+    async function poll() {{
+      while (true) {{
+        try {{
+          const response = await fetch(eventsPath, {{
+            cache: "no-store",
+            headers: {{
+              "Pragma": "no-cache",
+              "Cache-Control": "no-cache"
+            }}
+          }});
+          if (response.status === 204) {{
+            await new Promise((resolve) => setTimeout(resolve, 1200));
+            continue;
+          }}
+          if (!response.ok) {{
+            console.error("Overlay fetch failed", response.status);
+            await new Promise((resolve) => setTimeout(resolve, 2000));
+            continue;
+          }}
+          const raw = await response.text();
+          raw.split("\\n").forEach((line) => {{
+            if (!line.trim()) {{
+              return;
+            }}
+            try {{
+              const payload = JSON.parse(line);
+              handlePayload(payload);
+            }} catch (error) {{
+              console.error("Failed to parse event line", line, error);
+            }}
+          }});
+        }} catch (error) {{
+          console.error("Overlay polling error", error);
+          await new Promise((resolve) => setTimeout(resolve, 2500));
+        }}
+      }}
+    }}
+
+    poll();
+  </script>
+</body>
+</html>
+"""
+
 
 def _parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Relay YouTube chat messages")
@@ -131,9 +268,26 @@ def _start_http_server(
 
     host, port = _parse_http_endpoint(endpoint)
     normalized_prefix = _normalize_http_path(path_prefix)
-    allowed_paths = {normalized_prefix, f"{normalized_prefix}/events"}
-    if normalized_prefix == "/":
-        allowed_paths.add("/events")
+    base_path = normalized_prefix.rstrip("/") if normalized_prefix != "/" else ""
+    events_path = f"{base_path}/events" if base_path else "/events"
+    overlay_path = f"{base_path}/overlay" if base_path else "/overlay"
+    allowed_paths = {normalized_prefix, events_path, overlay_path}
+
+    def _send_overlay_headers(handler: http.server.BaseHTTPRequestHandler, include_body: bool) -> None:
+        html = OVERLAY_HTML_TEMPLATE.format(events_path_json=json.dumps(events_path))
+        data = html.encode("utf-8")
+        handler.send_response(200)
+        handler.send_header("Content-Type", "text/html; charset=utf-8")
+        handler.send_header("Cache-Control", "no-store")
+        handler.send_header("X-Frame-Options", "SAMEORIGIN")
+        handler.send_header("X-Content-Type-Options", "nosniff")
+        handler.send_header("Content-Length", str(len(data)))
+        handler.end_headers()
+        if include_body:
+            try:
+                handler.wfile.write(data)
+            except BrokenPipeError:  # pragma: no cover - depends on client
+                pass
 
     class _PollingHandler(http.server.BaseHTTPRequestHandler):
         server_version = "YouTubeChatListener/1.0"
@@ -142,6 +296,10 @@ def _start_http_server(
             path = urlparse(self.path).path
             if path not in allowed_paths:
                 self.send_error(404, "Not Found")
+                return
+
+            if path == overlay_path:
+                _send_overlay_headers(self, True)
                 return
 
             messages: List[str] = []
@@ -181,6 +339,10 @@ def _start_http_server(
                 self.send_error(404, "Not Found")
                 return
 
+            if path == overlay_path:
+                _send_overlay_headers(self, False)
+                return
+
             self.send_response(204)
             self.send_header("Cache-Control", "no-store")
             self.send_header("X-Accel-Buffering", "no")
@@ -218,12 +380,12 @@ def _start_http_server(
 
     HTTP_PUBLISH_ENABLED = True
     base_url = f"http://{host}:{port}{normalized_prefix}"
-    events_path = f"{normalized_prefix.rstrip('/')}/events" if normalized_prefix != "/" else "/events"
     _emit_log(
         "HTTP polling endpoint started",
         level="info",
         url=f"{base_url.rstrip('/') or base_url}",
         eventsUrl=f"http://{host}:{port}{events_path}",
+        overlayUrl=f"http://{host}:{port}{overlay_path}",
     )
     return thread
 
@@ -317,6 +479,32 @@ def _emit_subscriber(
         payload["raw"] = raw
     _emit_json(payload)
 
+
+def _emit_donation(
+    author: str,
+    amount: Optional[float],
+    currency: Optional[str],
+    message: Optional[str],
+    formatted_amount: Optional[str],
+    raw: Optional[Dict[str, Any]] = None,
+) -> None:
+    payload: Dict[str, Any] = {
+        "type": "donation",
+        "author": author,
+        "timestamp": _timestamp(),
+    }
+    if amount is not None:
+        payload["amount"] = amount
+    if currency:
+        payload["currency"] = currency
+    if formatted_amount:
+        payload["formattedAmount"] = formatted_amount
+    if message:
+        payload["message"] = message
+    if raw:
+        payload["raw"] = raw
+    _emit_json(payload)
+
 def _load_cookies(cookies_path: str) -> httpx.Cookies:
     jar = MozillaCookieJar()
     if not os.path.exists(cookies_path):
@@ -389,6 +577,20 @@ def _safe_int(value: Any) -> Optional[int]:
         return None
 
 
+def _safe_float(value: Any) -> Optional[float]:
+    if value is None:
+        return None
+    try:
+        if isinstance(value, str):
+            stripped = value.strip()
+            if stripped == "":
+                return None
+            return float(stripped)
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
 def _maybe_iterable(value: Any) -> Iterable[Any]:
     if isinstance(value, list):
         return value
@@ -409,18 +611,36 @@ def _handle_streamlabs_event(payload: Dict[str, Any]) -> None:
         if platform and "youtube" not in platform:
             continue
 
-        if event_type not in {"subscription", "resubscription", "mass_subscription"}:
+        if event_type in {"subscription", "resubscription", "mass_subscription"}:
+            author = (
+                entry.get("name")
+                or entry.get("display_name")
+                or entry.get("from")
+                or "YouTube Subscriber"
+            )
+            total_subscribers = _safe_int(entry.get("count") or entry.get("amount"))
+            channel_id = entry.get("channel_id")
+            _emit_subscriber(str(author), total_subscribers, channel_id, raw=entry)
             continue
 
-        author = (
-            entry.get("name")
-            or entry.get("display_name")
-            or entry.get("from")
-            or "YouTube Subscriber"
-        )
-        total_subscribers = _safe_int(entry.get("count") or entry.get("amount"))
-        channel_id = entry.get("channel_id")
-        _emit_subscriber(str(author), total_subscribers, channel_id, raw=entry)
+        if event_type in {"donation", "tip"}:
+            author = (
+                entry.get("name")
+                or entry.get("display_name")
+                or entry.get("from")
+                or "YouTube Supporter"
+            )
+            amount = _safe_float(entry.get("amount"))
+            currency = str(entry.get("currency") or "").upper() or None
+            formatted_amount = entry.get("formatted_amount") or entry.get("amount_display")
+            message_text = (
+                entry.get("message")
+                or entry.get("comment")
+                or entry.get("body")
+                or entry.get("note")
+            )
+            _emit_donation(str(author), amount, currency, message_text, formatted_amount, raw=entry)
+            continue
 
 
 def _run_streamlabs_listener(token: str, stop_event: threading.Event) -> None:

@@ -55,3 +55,25 @@ youtube-bridge:
       fuse-ticks: 80
       per-tick: 10
       tick-interval: 2
+  donations:
+    enabled: true
+    orbital-strike:
+      enabled: true
+      # Minimum donation amount (after currency conversion) required to trigger the strike.
+      min-amount: 5.0
+      # Currency code expected from Streamlabs (leave blank to accept any).
+      currency: "USD"
+      tnt-count: 100
+      # How high above the player TNT should spawn.
+      vertical-offset: 25.0
+      radius: 6.0
+      fuse-ticks: 60
+      # Number of TNT spawned per wave tick and how often to spawn the waves.
+      wave-size: 20
+      tick-interval: 2
+      title:
+        main: "&c{donor} armed the Orbital Strike Cannon!"
+        subtitle: "&eBrace for {tnt_count} TNT!"
+        fade-in: 10
+        stay: 40
+        fade-out: 20

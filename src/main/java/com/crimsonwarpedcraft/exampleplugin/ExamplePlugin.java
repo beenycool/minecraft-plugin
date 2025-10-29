@@ -353,6 +353,64 @@ public class ExamplePlugin extends JavaPlugin {
     return candidate.toFile();
   }
 
+  private void runOnMainThread(Runnable task) {
+    if (task == null) {
+      return;
+    }
+    if (Bukkit.isPrimaryThread()) {
+      task.run();
+    } else {
+      getServer().getScheduler().runTask(this, task);
+    }
+  }
+
+  private String applyTitlePlaceholders(
+      String template,
+      String donor,
+      Double amount,
+      String formattedAmount,
+      String currency,
+      String message,
+      int tntCount) {
+    if (template == null) {
+      return "";
+    }
+
+    String safeDonor = donor == null ? "" : donor;
+    String numericAmount =
+        amount == null ? "" : String.format(Locale.US, "%.2f", amount);
+    String safeCurrency = currency == null ? "" : currency.toUpperCase(Locale.ROOT);
+    String safeMessage = message == null ? "" : message;
+    String formatted = formatAmountText(amount, currency, formattedAmount);
+
+    String result =
+        template
+            .replace("{donor}", safeDonor)
+            .replace("{amount}", numericAmount)
+            .replace("{formatted_amount}", formatted)
+            .replace("{currency}", safeCurrency)
+            .replace("{message}", safeMessage)
+            .replace("{tnt_count}", Integer.toString(Math.max(0, tntCount)));
+
+    return ChatColor.translateAlternateColorCodes('&', result);
+  }
+
+  private String formatAmountText(
+      Double amount, String currency, String formattedAmountFromSource) {
+    if (formattedAmountFromSource != null && !formattedAmountFromSource.isBlank()) {
+      return formattedAmountFromSource;
+    }
+    if (amount == null) {
+      return "";
+    }
+
+    String numeric = String.format(Locale.US, "%.2f", amount);
+    if (currency == null || currency.isBlank()) {
+      return numeric;
+    }
+    return numeric + " " + currency.toUpperCase(Locale.ROOT);
+  }
+
   /** Handles chat lines emitted by the Python listener. */
   public void handleIncomingYouTubeMessage(String message, String targetIgn) {
     if (message == null || message.isBlank()) {
@@ -408,6 +466,10 @@ public class ExamplePlugin extends JavaPlugin {
       }
       case "subscriber" -> {
         handleStructuredSubscriber(root);
+        return true;
+      }
+      case "donation" -> {
+        handleStructuredDonation(root);
         return true;
       }
       case "milestone" -> {
@@ -466,6 +528,67 @@ public class ExamplePlugin extends JavaPlugin {
 
     bridge.emitSubscriberNotification(
         new SubscriberNotification(author, ign, totalSubscribers, channelId, timestamp));
+  }
+
+  private void handleStructuredDonation(JsonObject payload) {
+    if (!settings.enabled) {
+      return;
+    }
+
+    DonationSettings donationSettings = settings.donationSettings();
+    if (donationSettings == null || !donationSettings.enabled()) {
+      return;
+    }
+
+    OrbitalStrikeSettings orbitalStrike = donationSettings.orbitalStrike();
+    if (orbitalStrike == null || !orbitalStrike.enabled()) {
+      return;
+    }
+
+    Double amount = jsonDouble(payload, "amount");
+    if (amount == null) {
+      amount = jsonDouble(payload, "total");
+    }
+    if (amount == null) {
+      return;
+    }
+
+    if (amount < orbitalStrike.minAmount()) {
+      return;
+    }
+
+    String currency =
+        Optional.ofNullable(jsonString(payload, "currency"))
+            .map(String::trim)
+            .orElse("");
+    if (orbitalStrike.currency() != null && !orbitalStrike.currency().isBlank()) {
+      if (currency.isBlank() || !orbitalStrike.currency().equalsIgnoreCase(currency)) {
+        return;
+      }
+    }
+
+    Optional<Player> target = resolveConfiguredPlayer();
+    if (target.isEmpty()) {
+      return;
+    }
+
+    Player player = target.get();
+    String donor = Objects.requireNonNullElse(jsonString(payload, "author"), "Supporter");
+    String donorMessage = jsonString(payload, "message");
+    String formattedAmount = jsonString(payload, "formattedAmount");
+    Double finalAmount = amount;
+    String finalCurrency = currency;
+
+    runOnMainThread(
+        () ->
+            triggerOrbitalStrike(
+                player,
+                donor,
+                donorMessage,
+                formattedAmount,
+                finalAmount,
+                finalCurrency,
+                orbitalStrike));
   }
 
   private void handleStructuredMilestone(JsonObject payload) {
@@ -616,6 +739,38 @@ public class ExamplePlugin extends JavaPlugin {
               return null;
             }
           }
+        }
+      }
+    } catch (NumberFormatException | ClassCastException | IllegalStateException ex) {
+      return null;
+    }
+
+    return null;
+  }
+
+  private Double jsonDouble(JsonObject object, String member) {
+    if (!object.has(member)) {
+      return null;
+    }
+
+    JsonElement element = object.get(member);
+    if (element == null || element.isJsonNull()) {
+      return null;
+    }
+
+    try {
+      if (element.isJsonPrimitive()) {
+        JsonPrimitive primitive = element.getAsJsonPrimitive();
+        if (primitive.isNumber()) {
+          return primitive.getAsDouble();
+        }
+        if (primitive.isString()) {
+          String value = primitive.getAsString();
+          String trimmed = value.trim();
+          if (trimmed.isEmpty()) {
+            return null;
+          }
+          return Double.parseDouble(trimmed);
         }
       }
     } catch (NumberFormatException | ClassCastException | IllegalStateException ex) {
@@ -828,6 +983,111 @@ public class ExamplePlugin extends JavaPlugin {
     }.runTaskTimer(this, 0L, milestoneSettings.tickInterval);
   }
 
+  private void triggerOrbitalStrike(
+      Player player,
+      String donor,
+      String donorMessage,
+      String formattedAmount,
+      Double amount,
+      String currency,
+      OrbitalStrikeSettings settings) {
+    if (player == null || !player.isOnline()) {
+      return;
+    }
+
+    Location baseLocation = player.getLocation();
+    if (!isWorldAllowed(baseLocation.getWorld())) {
+      return;
+    }
+
+    World world = baseLocation.getWorld();
+    if (world == null) {
+      return;
+    }
+
+    double cappedRadius = Math.max(0.0D, settings.radius());
+    double baseY =
+        Math.max(
+            world.getMinHeight() + 1,
+            Math.min(world.getMaxHeight() - 1, baseLocation.getY() + settings.verticalOffset()));
+
+    List<Location> spawnLocations = new ArrayList<>();
+    int attempts = 0;
+    int desired = Math.max(1, settings.tntCount());
+    while (spawnLocations.size() < desired && attempts < desired * 5) {
+      attempts++;
+      double angle = secureRandom.nextDouble() * Math.PI * 2.0;
+      double distance = cappedRadius <= 0.001D ? 0.0D : secureRandom.nextDouble() * cappedRadius;
+      double offsetX = Math.cos(angle) * distance;
+      double offsetZ = Math.sin(angle) * distance;
+      Location candidate =
+          new Location(world, baseLocation.getX() + offsetX, baseY, baseLocation.getZ() + offsetZ);
+      if (canSpawnTnt(candidate)) {
+        spawnLocations.add(candidate);
+      }
+    }
+
+    if (spawnLocations.isEmpty()) {
+      getLogger()
+          .log(
+              Level.FINE,
+              "Orbital strike skipped for donor {0}: unable to find safe spawn locations.",
+              donor);
+      return;
+    }
+
+    String mainTitle =
+        applyTitlePlaceholders(
+            settings.titleMain(),
+            donor,
+            amount,
+            formattedAmount,
+            currency,
+            donorMessage,
+            spawnLocations.size());
+    String subTitle =
+        applyTitlePlaceholders(
+            settings.titleSubtitle(),
+            donor,
+            amount,
+            formattedAmount,
+            currency,
+            donorMessage,
+            spawnLocations.size());
+
+    if (!mainTitle.isEmpty() || !subTitle.isEmpty()) {
+      player.sendTitle(
+          mainTitle,
+          subTitle,
+          settings.titleFadeIn(),
+          settings.titleStay(),
+          settings.titleFadeOut());
+    }
+
+    new BukkitRunnable() {
+      private int index = 0;
+
+      @Override
+      public void run() {
+        if (!player.isOnline() || !player.getWorld().equals(world)) {
+          cancel();
+          return;
+        }
+
+        int spawned = 0;
+        while (index < spawnLocations.size() && spawned < settings.waveSize()) {
+          Location location = spawnLocations.get(index++);
+          spawnPrimedTnt(location, settings.fuseTicks());
+          spawned++;
+        }
+
+        if (index >= spawnLocations.size()) {
+          cancel();
+        }
+      }
+    }.runTaskTimer(this, 0L, settings.tickInterval());
+  }
+
   /** Reloads cached configuration values from {@code config.yml}. */
   public void loadSettingsFromConfig() {
     FileConfiguration config = getConfig();
@@ -945,7 +1205,8 @@ public class ExamplePlugin extends JavaPlugin {
       boolean subscriberKillEnabled,
       boolean milestoneEnabled,
       long subscriberMilestoneInterval,
-      MilestoneSettings milestoneSettings) {
+      MilestoneSettings milestoneSettings,
+      DonationSettings donationSettings) {
 
     static BridgeSettings from(FileConfiguration config) {
       ConfigurationSection root = config.getConfigurationSection("youtube-bridge");
@@ -996,6 +1257,67 @@ public class ExamplePlugin extends JavaPlugin {
       final int perTick = Math.max(1, milestone.getInt("per-tick", 10));
       final long tickInterval = Math.max(1L, milestone.getLong("tick-interval", 2L));
 
+      ConfigurationSection donations = root.getConfigurationSection("donations");
+      if (donations == null) {
+        donations = root.createSection("donations");
+      }
+      final boolean donationsEnabled = donations.getBoolean("enabled", true);
+      ConfigurationSection orbitalStrike = donations.getConfigurationSection("orbital-strike");
+      if (orbitalStrike == null) {
+        orbitalStrike = donations.createSection("orbital-strike");
+      }
+      final boolean orbitalStrikeEnabled = orbitalStrike.getBoolean("enabled", true);
+      final double orbitalStrikeMinAmount = orbitalStrike.getDouble("min-amount", 5.0D);
+      final String orbitalStrikeCurrency =
+          Optional.ofNullable(orbitalStrike.getString("currency"))
+              .map(String::trim)
+              .filter(value -> !value.isEmpty())
+              .map(value -> value.toUpperCase(Locale.ROOT))
+              .orElse("");
+      final int orbitalStrikeTntCount = Math.max(1, orbitalStrike.getInt("tnt-count", 100));
+      final double orbitalStrikeVerticalOffset = orbitalStrike.getDouble("vertical-offset", 25.0D);
+      final double orbitalStrikeRadius = Math.max(0.0D, orbitalStrike.getDouble("radius", 6.0D));
+      final int orbitalStrikeFuseTicks = Math.max(0, orbitalStrike.getInt("fuse-ticks", 60));
+      final int orbitalStrikeWaveSize = Math.max(1, orbitalStrike.getInt("wave-size", 20));
+      final long orbitalStrikeTickInterval =
+          Math.max(1L, orbitalStrike.getLong("tick-interval", 2L));
+      ConfigurationSection orbitalStrikeTitle = orbitalStrike.getConfigurationSection("title");
+      if (orbitalStrikeTitle == null) {
+        orbitalStrikeTitle = orbitalStrike.createSection("title");
+      }
+      final String orbitalStrikeTitleMain =
+          Objects.requireNonNullElse(
+              orbitalStrikeTitle.getString("main"),
+              "&c{donor} armed the Orbital Strike Cannon!");
+      final String orbitalStrikeTitleSubtitle =
+          Objects.requireNonNullElse(
+              orbitalStrikeTitle.getString("subtitle"),
+              "&eBrace for {tnt_count} TNT!");
+      final int orbitalStrikeTitleFadeIn =
+          Math.max(0, orbitalStrikeTitle.getInt("fade-in", 10));
+      final int orbitalStrikeTitleStay = Math.max(0, orbitalStrikeTitle.getInt("stay", 40));
+      final int orbitalStrikeTitleFadeOut =
+          Math.max(0, orbitalStrikeTitle.getInt("fade-out", 20));
+
+      DonationSettings donationSettings =
+          new DonationSettings(
+              donationsEnabled,
+              new OrbitalStrikeSettings(
+                  orbitalStrikeEnabled,
+                  orbitalStrikeMinAmount,
+                  orbitalStrikeCurrency,
+                  orbitalStrikeTntCount,
+                  orbitalStrikeVerticalOffset,
+                  orbitalStrikeRadius,
+                  orbitalStrikeFuseTicks,
+                  orbitalStrikeWaveSize,
+                  orbitalStrikeTickInterval,
+                  orbitalStrikeTitleMain,
+                  orbitalStrikeTitleSubtitle,
+                  orbitalStrikeTitleFadeIn,
+                  orbitalStrikeTitleStay,
+                  orbitalStrikeTitleFadeOut));
+
       return new BridgeSettings(
           enabled,
           targetPlayer,
@@ -1008,12 +1330,31 @@ public class ExamplePlugin extends JavaPlugin {
           subscriberKillEnabled,
           milestoneEnabled,
           milestoneInterval,
-          new MilestoneSettings(tntCount, radius, fuseTicks, perTick, tickInterval));
+          new MilestoneSettings(tntCount, radius, fuseTicks, perTick, tickInterval),
+          donationSettings);
     }
   }
 
   private record MilestoneSettings(
       int tntCount, double radius, int fuseTicks, int perTick, long tickInterval) {}
+
+  private record DonationSettings(boolean enabled, OrbitalStrikeSettings orbitalStrike) {}
+
+  private record OrbitalStrikeSettings(
+      boolean enabled,
+      double minAmount,
+      String currency,
+      int tntCount,
+      double verticalOffset,
+      double radius,
+      int fuseTicks,
+      int waveSize,
+      long tickInterval,
+      String titleMain,
+      String titleSubtitle,
+      int titleFadeIn,
+      int titleStay,
+      int titleFadeOut) {}
 
   /**
    * Helper used by tests or debug scripts to emulate an incoming chat message without the
