@@ -52,6 +52,8 @@ public class ExamplePlugin extends JavaPlugin {
 
   private static final String DEFAULT_LISTENER_SCRIPT = "python/chat_listener.py";
 
+  private static final int NEAR_INSTANT_FUSE_TICKS = 1;
+
   private final AtomicLong messageSequence = new AtomicLong();
 
   // Fields from codex branch
@@ -918,7 +920,8 @@ public class ExamplePlugin extends JavaPlugin {
         location,
         TNTPrimed.class,
         tnt -> {
-          tnt.setFuseTicks(Math.max(0, fuseTicks));
+          int adjustedFuseTicks = Math.max(0, Math.min(fuseTicks, NEAR_INSTANT_FUSE_TICKS));
+          tnt.setFuseTicks(adjustedFuseTicks);
         });
   }
 
