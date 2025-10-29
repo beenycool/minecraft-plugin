@@ -378,18 +378,19 @@ public class ExamplePlugin extends JavaPlugin {
 
     String safeDonor = donor == null ? "" : donor;
     String numericAmount =
-        amount == null ? "" : String.format(Locale.US, "%.2f", amount.doubleValue());
+        amount == null ? "" : String.format(Locale.US, "%.2f", amount);
     String safeCurrency = currency == null ? "" : currency.toUpperCase(Locale.ROOT);
     String safeMessage = message == null ? "" : message;
     String formatted = formatAmountText(amount, currency, formattedAmount);
 
-    String result = template;
-    result = result.replace("{donor}", safeDonor);
-    result = result.replace("{amount}", numericAmount);
-    result = result.replace("{formatted_amount}", formatted);
-    result = result.replace("{currency}", safeCurrency);
-    result = result.replace("{message}", safeMessage);
-    result = result.replace("{tnt_count}", Integer.toString(Math.max(0, tntCount)));
+    String result =
+        template
+            .replace("{donor}", safeDonor)
+            .replace("{amount}", numericAmount)
+            .replace("{formatted_amount}", formatted)
+            .replace("{currency}", safeCurrency)
+            .replace("{message}", safeMessage)
+            .replace("{tnt_count}", Integer.toString(Math.max(0, tntCount)));
 
     return ChatColor.translateAlternateColorCodes('&', result);
   }
@@ -403,7 +404,7 @@ public class ExamplePlugin extends JavaPlugin {
       return "";
     }
 
-    String numeric = String.format(Locale.US, "%.2f", amount.doubleValue());
+    String numeric = String.format(Locale.US, "%.2f", amount);
     if (currency == null || currency.isBlank()) {
       return numeric;
     }
@@ -561,8 +562,7 @@ public class ExamplePlugin extends JavaPlugin {
             .map(String::trim)
             .orElse("");
     if (orbitalStrike.currency() != null && !orbitalStrike.currency().isBlank()) {
-      if (currency.isBlank()
-          || !orbitalStrike.currency().equalsIgnoreCase(currency.trim())) {
+      if (currency.isBlank() || !orbitalStrike.currency().equalsIgnoreCase(currency)) {
         return;
       }
     }
@@ -766,9 +766,6 @@ public class ExamplePlugin extends JavaPlugin {
         }
         if (primitive.isString()) {
           String value = primitive.getAsString();
-          if (value == null) {
-            return null;
-          }
           String trimmed = value.trim();
           if (trimmed.isEmpty()) {
             return null;

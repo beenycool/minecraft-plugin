@@ -109,7 +109,7 @@ OVERLAY_HTML_TEMPLATE = """<!DOCTYPE html>
         const rawAmount = typeof payload.amount === "number" ? payload.amount.toFixed(2) : null;
         const amountText = payload.formattedAmount || (rawAmount ? `${{rawAmount}}${{payload.currency ? ` ${payload.currency}` : ""}}` : "");
         const suffix = amountText ? ` donated ${{amountText}}` : " donated";
-        addLine(`${{donor}}${{suffix}} – Orbital Strike Cannon online!`, "donation");
+        addLine(`${{donor}}${{suffix}} - Orbital Strike Cannon online!`, "donation");
         return;
       }}
       if (payload.type === "chat") {{
@@ -268,12 +268,26 @@ def _start_http_server(
 
     host, port = _parse_http_endpoint(endpoint)
     normalized_prefix = _normalize_http_path(path_prefix)
-    events_path = f"{normalized_prefix.rstrip('/')}/events" if normalized_prefix != "/" else "/events"
-    overlay_path = f"{normalized_prefix.rstrip('/')}/overlay" if normalized_prefix != "/" else "/overlay"
+    base_path = normalized_prefix.rstrip("/") if normalized_prefix != "/" else ""
+    events_path = f"{base_path}/events" if base_path else "/events"
+    overlay_path = f"{base_path}/overlay" if base_path else "/overlay"
     allowed_paths = {normalized_prefix, events_path, overlay_path}
-    if normalized_prefix == "/":
-        allowed_paths.add("/events")
-        allowed_paths.add("/overlay")
+
+    def _send_overlay_headers(handler: http.server.BaseHTTPRequestHandler, include_body: bool) -> None:
+        html = OVERLAY_HTML_TEMPLATE.format(events_path_json=json.dumps(events_path))
+        data = html.encode("utf-8")
+        handler.send_response(200)
+        handler.send_header("Content-Type", "text/html; charset=utf-8")
+        handler.send_header("Cache-Control", "no-store")
+        handler.send_header("X-Frame-Options", "SAMEORIGIN")
+        handler.send_header("X-Content-Type-Options", "nosniff")
+        handler.send_header("Content-Length", str(len(data)))
+        handler.end_headers()
+        if include_body:
+            try:
+                handler.wfile.write(data)
+            except BrokenPipeError:  # pragma: no cover - depends on client
+                pass
 
     class _PollingHandler(http.server.BaseHTTPRequestHandler):
         server_version = "YouTubeChatListener/1.0"
@@ -285,19 +299,7 @@ def _start_http_server(
                 return
 
             if path == overlay_path:
-                html = OVERLAY_HTML_TEMPLATE.format(events_path_json=json.dumps(events_path))
-                data = html.encode("utf-8")
-                self.send_response(200)
-                self.send_header("Content-Type", "text/html; charset=utf-8")
-                self.send_header("Content-Length", str(len(data)))
-                self.send_header("Cache-Control", "no-store")
-                self.send_header("X-Frame-Options", "SAMEORIGIN")
-                self.send_header("X-Content-Type-Options", "nosniff")
-                self.end_headers()
-                try:
-                    self.wfile.write(data)
-                except BrokenPipeError:  # pragma: no cover - depends on client
-                    pass
+                _send_overlay_headers(self, True)
                 return
 
             messages: List[str] = []
@@ -338,13 +340,7 @@ def _start_http_server(
                 return
 
             if path == overlay_path:
-                html = OVERLAY_HTML_TEMPLATE.format(events_path_json=json.dumps(events_path))
-                data_length = len(html.encode("utf-8"))
-                self.send_response(200)
-                self.send_header("Content-Type", "text/html; charset=utf-8")
-                self.send_header("Cache-Control", "no-store")
-                self.send_header("Content-Length", str(data_length))
-                self.end_headers()
+                _send_overlay_headers(self, False)
                 return
 
             self.send_response(204)

@@ -78,7 +78,7 @@ plugin's `config.yml`, set `youtube.listener-url` to the HTTPS URL that Caddy ex
 When the HTTP endpoint is running, the listener also serves a lightweight overlay that you can add
 as an OBS browser source. Point the source at the `/overlay` path matching your prefix, for example:
 
-```
+```text
 http://127.0.0.1:8081/yt-listener/overlay
 ```
 
