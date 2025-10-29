@@ -55,6 +55,12 @@ youtube-bridge:
       fuse-ticks: 80
       per-tick: 10
       tick-interval: 2
+      title:
+        main: "&b{total_subscribers} Subscribers!"
+        subtitle: "&eMilestone interval reached!"
+        fade-in: 10
+        stay: 60
+        fade-out: 20
   donations:
     enabled: true
     orbital-strike:

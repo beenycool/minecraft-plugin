@@ -44,6 +44,7 @@ import org.bukkit.entity.TNTPrimed;
 import org.bukkit.plugin.java.JavaPlugin;
 import org.bukkit.scheduler.BukkitRunnable;
 import org.bukkit.util.Vector;
+import org.jetbrains.annotations.NotNull;
 
 /**
  * Example plugin entry point that wires the YouTube bridge behaviours together.
@@ -378,12 +379,12 @@ public class ExamplePlugin extends JavaPlugin {
       return "";
     }
 
-    String safeDonor = donor == null ? "" : donor;
-    String numericAmount =
+    final String safeDonor = donor == null ? "" : donor;
+    final String numericAmount =
         amount == null ? "" : String.format(Locale.US, "%.2f", amount);
-    String safeCurrency = currency == null ? "" : currency.toUpperCase(Locale.ROOT);
-    String safeMessage = message == null ? "" : message;
-    String formatted = formatAmountText(amount, currency, formattedAmount);
+    final String safeCurrency = currency == null ? "" : currency.toUpperCase(Locale.ROOT);
+    final String safeMessage = message == null ? "" : message;
+    final String formatted = formatAmountText(amount, currency, formattedAmount);
 
     String result =
         template
@@ -393,6 +394,24 @@ public class ExamplePlugin extends JavaPlugin {
             .replace("{currency}", safeCurrency)
             .replace("{message}", safeMessage)
             .replace("{tnt_count}", Integer.toString(Math.max(0, tntCount)));
+
+    return ChatColor.translateAlternateColorCodes('&', result);
+  }
+
+  private String applyMilestoneTitlePlaceholders(
+      String template, @NotNull SubscriberMilestone milestone, int tntCount) {
+    if (template == null) {
+      return "";
+    }
+
+    long totalSubscribers = Math.max(0L, milestone.totalSubscribers());
+    long interval = Math.max(0L, milestone.milestoneInterval());
+    int safeTntCount = Math.max(0, tntCount);
+
+    String result = template;
+    result = result.replace("{total_subscribers}", Long.toString(totalSubscribers));
+    result = result.replace("{milestone_interval}", Long.toString(interval));
+    result = result.replace("{tnt_count}", Integer.toString(safeTntCount));
 
     return ChatColor.translateAlternateColorCodes('&', result);
   }
@@ -927,7 +946,7 @@ public class ExamplePlugin extends JavaPlugin {
 
   private void spawnMilestoneCelebration(Player player, SubscriberMilestone milestone) {
     MilestoneSettings milestoneSettings = settings.milestoneSettings;
-    if (milestoneSettings.tntCount <= 0) {
+    if (milestoneSettings.tntCount() <= 0) {
       return;
     }
 
@@ -937,9 +956,9 @@ public class ExamplePlugin extends JavaPlugin {
     }
 
     List<Location> spawnLocations = new ArrayList<>();
-    for (int i = 0; i < milestoneSettings.tntCount; i++) {
+    for (int i = 0; i < milestoneSettings.tntCount(); i++) {
       double angle = secureRandom.nextDouble() * Math.PI * 2.0;
-      double distance = secureRandom.nextDouble() * milestoneSettings.radius;
+      double distance = secureRandom.nextDouble() * milestoneSettings.radius();
       double offsetX = Math.cos(angle) * distance;
       double offsetZ = Math.sin(angle) * distance;
       Location location =
@@ -962,6 +981,21 @@ public class ExamplePlugin extends JavaPlugin {
       return;
     }
 
+    String mainTitle =
+        applyMilestoneTitlePlaceholders(
+            milestoneSettings.titleMain(), milestone, spawnLocations.size());
+    String subTitle =
+        applyMilestoneTitlePlaceholders(
+            milestoneSettings.titleSubtitle(), milestone, spawnLocations.size());
+    if (!mainTitle.isEmpty() || !subTitle.isEmpty()) {
+      player.sendTitle(
+          mainTitle,
+          subTitle,
+          milestoneSettings.titleFadeIn(),
+          milestoneSettings.titleStay(),
+          milestoneSettings.titleFadeOut());
+    }
+
     new BukkitRunnable() {
       private int index = 0;
 
@@ -973,9 +1007,10 @@ public class ExamplePlugin extends JavaPlugin {
         }
 
         int spawnedThisTick = 0;
-        while (index < spawnLocations.size() && spawnedThisTick < milestoneSettings.perTick) {
+        while (index < spawnLocations.size()
+            && spawnedThisTick < milestoneSettings.perTick()) {
           Location location = spawnLocations.get(index++);
-          spawnPrimedTnt(location, milestoneSettings.fuseTicks);
+          spawnPrimedTnt(location, milestoneSettings.fuseTicks());
           spawnedThisTick++;
         }
 
@@ -983,7 +1018,7 @@ public class ExamplePlugin extends JavaPlugin {
           cancel();
         }
       }
-    }.runTaskTimer(this, 0L, milestoneSettings.tickInterval);
+    }.runTaskTimer(this, 0L, milestoneSettings.tickInterval());
   }
 
   private void triggerOrbitalStrike(
@@ -1259,6 +1294,23 @@ public class ExamplePlugin extends JavaPlugin {
       final int fuseTicks = milestone.getInt("fuse-ticks", 80);
       final int perTick = Math.max(1, milestone.getInt("per-tick", 10));
       final long tickInterval = Math.max(1L, milestone.getLong("tick-interval", 2L));
+      ConfigurationSection milestoneTitle = milestone.getConfigurationSection("title");
+      if (milestoneTitle == null) {
+        milestoneTitle = milestone.createSection("title");
+      }
+      final String milestoneTitleMain =
+          Objects.requireNonNullElse(
+              milestoneTitle.getString("main"),
+              "&b{total_subscribers} Subscribers!");
+      final String milestoneTitleSubtitle =
+          Objects.requireNonNullElse(
+              milestoneTitle.getString("subtitle"),
+              "&eMilestone interval reached!");
+      final int milestoneTitleFadeIn =
+          Math.max(0, milestoneTitle.getInt("fade-in", 10));
+      final int milestoneTitleStay = Math.max(0, milestoneTitle.getInt("stay", 60));
+      final int milestoneTitleFadeOut =
+          Math.max(0, milestoneTitle.getInt("fade-out", 20));
 
       ConfigurationSection donations = root.getConfigurationSection("donations");
       if (donations == null) {
@@ -1333,13 +1385,32 @@ public class ExamplePlugin extends JavaPlugin {
           subscriberKillEnabled,
           milestoneEnabled,
           milestoneInterval,
-          new MilestoneSettings(tntCount, radius, fuseTicks, perTick, tickInterval),
+          new MilestoneSettings(
+              tntCount,
+              radius,
+              fuseTicks,
+              perTick,
+              tickInterval,
+              milestoneTitleMain,
+              milestoneTitleSubtitle,
+              milestoneTitleFadeIn,
+              milestoneTitleStay,
+              milestoneTitleFadeOut),
           donationSettings);
     }
   }
 
   private record MilestoneSettings(
-      int tntCount, double radius, int fuseTicks, int perTick, long tickInterval) {}
+      int tntCount,
+      double radius,
+      int fuseTicks,
+      int perTick,
+      long tickInterval,
+      String titleMain,
+      String titleSubtitle,
+      int titleFadeIn,
+      int titleStay,
+      int titleFadeOut) {}
 
   private record DonationSettings(boolean enabled, OrbitalStrikeSettings orbitalStrike) {}
 
