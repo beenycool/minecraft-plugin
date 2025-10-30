@@ -36,6 +36,7 @@ import java.util.logging.Level;
 import org.bukkit.Bukkit;
 import org.bukkit.ChatColor;
 import org.bukkit.Location;
+import org.bukkit.Sound;
 import org.bukkit.World;
 import org.bukkit.command.PluginCommand;
 import org.bukkit.configuration.ConfigurationSection;
@@ -818,8 +819,12 @@ public class ExamplePlugin extends JavaPlugin {
     }
 
     Player player = target.get();
-    spawnSingleTnt(
-        player.getLocation(), settings.chatTntFuseTicks, settings.chatTntVerticalOffset);
+    if (spawnSingleTnt(
+        player.getLocation(), settings.chatTntFuseTicks, settings.chatTntVerticalOffset)) {
+      player
+          .getWorld()
+          .playSound(player.getLocation(), Sound.ENTITY_FIREWORK_ROCKET_LAUNCH, 1.0f, 1.0f);
+    }
   }
 
   private void handleSubscriberNotification(SubscriberNotification notification) {
@@ -901,12 +906,13 @@ public class ExamplePlugin extends JavaPlugin {
         || settings.allowedWorlds.contains(world.getName().toLowerCase(Locale.ROOT));
   }
 
-  private void spawnSingleTnt(Location baseLocation, int fuseTicks, double verticalOffset) {
+  private boolean spawnSingleTnt(Location baseLocation, int fuseTicks, double verticalOffset) {
     Location spawnLocation = baseLocation.clone().add(new Vector(0, verticalOffset, 0));
     if (!canSpawnTnt(spawnLocation)) {
-      return;
+      return false;
     }
     spawnPrimedTnt(spawnLocation, fuseTicks);
+    return true;
   }
 
   private boolean canSpawnTnt(Location location) {
