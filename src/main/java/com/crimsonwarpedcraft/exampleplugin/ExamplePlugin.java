@@ -55,8 +55,6 @@ public class ExamplePlugin extends JavaPlugin {
 
   private static final String DEFAULT_LISTENER_SCRIPT = "python/chat_listener.py";
 
-  private static final int NEAR_INSTANT_FUSE_TICKS = 1;
-
   private final AtomicLong messageSequence = new AtomicLong();
 
   // Fields from codex branch
@@ -947,7 +945,7 @@ public class ExamplePlugin extends JavaPlugin {
         location,
         TNTPrimed.class,
         tnt -> {
-          int adjustedFuseTicks = Math.max(0, Math.min(fuseTicks, NEAR_INSTANT_FUSE_TICKS));
+          int adjustedFuseTicks = Math.max(0, fuseTicks);
           tnt.setFuseTicks(adjustedFuseTicks);
         });
   }
@@ -1053,12 +1051,10 @@ public class ExamplePlugin extends JavaPlugin {
             Math.min(world.getMaxHeight() - 1, baseLocation.getY() + settings.verticalOffset()));
 
     List<Location> spawnLocations = new ArrayList<>();
-    int attempts = 0;
     int desired = Math.max(1, settings.tntCount());
-    while (spawnLocations.size() < desired && attempts < desired * 5) {
-      attempts++;
-      double angle = secureRandom.nextDouble() * Math.PI * 2.0;
-      double distance = cappedRadius <= 0.001D ? 0.0D : secureRandom.nextDouble() * cappedRadius;
+    for (int i = 0; i < desired; i++) {
+      double angle = desired == 1 ? 0.0D : (Math.PI * 2.0D * i) / desired;
+      double distance = cappedRadius <= 0.001D ? 0.0D : cappedRadius;
       double offsetX = Math.cos(angle) * distance;
       double offsetZ = Math.sin(angle) * distance;
       Location candidate =
