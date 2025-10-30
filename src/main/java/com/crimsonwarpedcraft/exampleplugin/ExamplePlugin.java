@@ -1158,6 +1158,78 @@ public class ExamplePlugin extends JavaPlugin {
     return new SelfTestResult(passed, List.copyOf(messages));
   }
 
+  /** Attempts to trigger the orbital strike routine using the configured settings. */
+  public OrbitalStrikeDemoResult runOrbitalStrikeDemo() {
+    List<String> messages = new ArrayList<>();
+
+    if (settings == null) {
+      messages.add(
+          ChatColor.RED
+              + "Bridge settings are unavailable; reload the configuration first.");
+      return new OrbitalStrikeDemoResult(false, messages);
+    }
+
+    if (!settings.enabled()) {
+      messages.add(ChatColor.RED + "Bridge features are disabled in config.yml.");
+      return new OrbitalStrikeDemoResult(false, messages);
+    }
+
+    DonationSettings donationSettings = settings.donationSettings();
+    if (donationSettings == null || !donationSettings.enabled()) {
+      messages.add(ChatColor.RED + "Donation reactions are disabled in config.yml.");
+      return new OrbitalStrikeDemoResult(false, messages);
+    }
+
+    OrbitalStrikeSettings orbitalStrike = donationSettings.orbitalStrike();
+    if (orbitalStrike == null || !orbitalStrike.enabled()) {
+      messages.add(ChatColor.RED + "Orbital strike behaviour is disabled in config.yml.");
+      return new OrbitalStrikeDemoResult(false, messages);
+    }
+
+    Optional<Player> target = resolveConfiguredPlayer();
+    if (target.isEmpty()) {
+      messages.add(
+          ChatColor.RED + "No eligible target player is online for the orbital strike test.");
+      return new OrbitalStrikeDemoResult(false, messages);
+    }
+
+    Player player = target.get();
+    messages.add(
+        ChatColor.GREEN
+            + "Launching orbital strike test targeting "
+            + ChatColor.YELLOW
+            + player.getName()
+            + ChatColor.GREEN
+            + ".");
+
+    double demoAmount = Math.max(orbitalStrike.minAmount(), 1.0D);
+    String currency = Objects.requireNonNullElse(orbitalStrike.currency(), "");
+    String formattedAmount;
+    if (currency.isBlank()) {
+      formattedAmount = String.format(Locale.US, "%.2f", demoAmount);
+    } else {
+      formattedAmount =
+          currency.toUpperCase(Locale.ROOT) + " " + String.format(Locale.US, "%.2f", demoAmount);
+    }
+
+    double finalAmount = demoAmount;
+    String finalCurrency = currency;
+    String finalFormattedAmount = formattedAmount;
+
+    runOnMainThread(
+        () ->
+            triggerOrbitalStrike(
+                player,
+                "Debug Supporter",
+                "This is only a test of the orbital strike cannon.",
+                finalFormattedAmount,
+                finalAmount,
+                finalCurrency,
+                orbitalStrike));
+
+    return new OrbitalStrikeDemoResult(true, messages);
+  }
+
   private boolean checkBridgeSettings(List<String> messages) {
     if (settings == null) {
       messages.add(ChatColor.RED + "Bridge settings could not be loaded from config.yml.");
@@ -1312,6 +1384,33 @@ public class ExamplePlugin extends JavaPlugin {
     /** Returns {@code true} when all checks succeeded. */
     public boolean passed() {
       return passed;
+    }
+
+    /** Returns the immutable list of diagnostic messages. */
+    public List<String> messages() {
+      return messages;
+    }
+  }
+
+  /** Result of {@link #runOrbitalStrikeDemo()}. */
+  public static final class OrbitalStrikeDemoResult {
+    private final boolean triggered;
+    private final List<String> messages;
+
+    /**
+     * Creates a new immutable orbital strike demo result.
+     *
+     * @param triggered whether the strike routine was started
+     * @param messages diagnostic messages gathered during the attempt
+     */
+    public OrbitalStrikeDemoResult(boolean triggered, List<String> messages) {
+      this.triggered = triggered;
+      this.messages = Collections.unmodifiableList(new ArrayList<>(messages));
+    }
+
+    /** Returns {@code true} when the strike routine was triggered. */
+    public boolean triggered() {
+      return triggered;
     }
 
     /** Returns the immutable list of diagnostic messages. */

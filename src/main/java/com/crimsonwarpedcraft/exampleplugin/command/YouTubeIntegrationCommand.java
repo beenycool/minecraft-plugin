@@ -60,7 +60,7 @@ public class YouTubeIntegrationCommand implements CommandExecutor, TabCompleter 
                 + "restarted monitoring.");
         return true;
       case "test":
-        return handleSelfTest(sender);
+        return handleSelfTest(sender, args);
       default:
         sendUsage(sender, label);
         return true;
@@ -115,7 +115,15 @@ public class YouTubeIntegrationCommand implements CommandExecutor, TabCompleter 
   }
 
   private void sendUsage(CommandSender sender, String label) {
-    sender.sendMessage(ChatColor.RED + "Usage: /" + label + " <setchat|settarget|reload|test>");
+    sender.sendMessage(
+        ChatColor.RED
+            + "Usage: /"
+            + label
+            + " <setchat|settarget|reload|test> [scenario]"
+            + ChatColor.YELLOW
+            + " (try /"
+            + label
+            + " test orbitalstrike)");
   }
 
   @Override
@@ -151,22 +159,64 @@ public class YouTubeIntegrationCommand implements CommandExecutor, TabCompleter 
       return suggestions;
     }
 
+    if (args.length == 2 && "test".equalsIgnoreCase(args[0])) {
+      String prefix = args[1].toLowerCase();
+      List<String> suggestions = new ArrayList<>();
+      for (String option : Arrays.asList("orbitalstrike")) {
+        if (option.startsWith(prefix)) {
+          suggestions.add(option);
+        }
+      }
+      return suggestions;
+    }
+
     return Collections.emptyList();
   }
 
-  private boolean handleSelfTest(CommandSender sender) {
-    ExamplePlugin.SelfTestResult result = plugin.runIntegrationSelfTest();
-    sender.sendMessage(ChatColor.YELLOW + "YouTube integration self-test results:");
+  private boolean handleSelfTest(CommandSender sender, String[] args) {
+    if (args.length == 1) {
+      ExamplePlugin.SelfTestResult result = plugin.runIntegrationSelfTest();
+      sender.sendMessage(ChatColor.YELLOW + "YouTube integration self-test results:");
+      for (String line : result.messages()) {
+        sender.sendMessage(line);
+      }
+      if (result.passed()) {
+        sender.sendMessage(ChatColor.GREEN + "All checks passed successfully.");
+      } else {
+        sender.sendMessage(
+            ChatColor.RED
+                +
+                "One or more checks failed. Review the messages above before going live.");
+      }
+      return true;
+    }
+
+    String scenario = args[1].toLowerCase();
+    switch (scenario) {
+      case "orbital":
+      case "orbitalstrike":
+      case "donation":
+        return handleOrbitalStrikeTest(sender);
+      default:
+        sender.sendMessage(
+            ChatColor.RED
+                + "Unknown test scenario. Available options:"
+                + ChatColor.YELLOW
+                + " orbitalstrike");
+        return true;
+    }
+  }
+
+  private boolean handleOrbitalStrikeTest(CommandSender sender) {
+    ExamplePlugin.OrbitalStrikeDemoResult result = plugin.runOrbitalStrikeDemo();
     for (String line : result.messages()) {
       sender.sendMessage(line);
     }
-    if (result.passed()) {
-      sender.sendMessage(ChatColor.GREEN + "All checks passed successfully.");
-    } else {
-      sender.sendMessage(
-          ChatColor.RED
-              + "One or more checks failed. Review the messages above before going live.");
+    if (!result.triggered()) {
+      sender.sendMessage(ChatColor.RED + "Orbital strike test could not be started.");
+      return true;
     }
+    sender.sendMessage(ChatColor.GREEN + "Orbital strike test launched successfully.");
     return true;
   }
 }
