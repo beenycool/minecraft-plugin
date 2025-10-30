@@ -602,16 +602,17 @@ public class ExamplePlugin extends JavaPlugin {
     Double finalAmount = amount;
     String finalCurrency = currency;
 
-    runOnMainThread(
-        () ->
-            triggerOrbitalStrike(
-                player,
-                donor,
-                donorMessage,
-                formattedAmount,
-                finalAmount,
-                finalCurrency,
-                orbitalStrike));
+    OrbitalStrikeInvocation invocation =
+        new OrbitalStrikeInvocation(
+            player,
+            donor,
+            donorMessage,
+            formattedAmount,
+            finalAmount,
+            finalCurrency,
+            orbitalStrike);
+
+    runOnMainThread(() -> triggerOrbitalStrike(invocation));
   }
 
   private void handleStructuredMilestone(JsonObject payload) {
@@ -1028,14 +1029,8 @@ public class ExamplePlugin extends JavaPlugin {
     }.runTaskTimer(this, 0L, milestoneSettings.tickInterval());
   }
 
-  private void triggerOrbitalStrike(
-      Player player,
-      String donor,
-      String donorMessage,
-      String formattedAmount,
-      Double amount,
-      String currency,
-      OrbitalStrikeSettings settings) {
+  private void triggerOrbitalStrike(OrbitalStrikeInvocation invocation) {
+    Player player = invocation.player();
     if (player == null || !player.isOnline()) {
       return;
     }
@@ -1050,6 +1045,7 @@ public class ExamplePlugin extends JavaPlugin {
       return;
     }
 
+    OrbitalStrikeSettings settings = invocation.settings();
     double cappedRadius = Math.max(0.0D, settings.radius());
     double baseY =
         Math.max(
@@ -1077,27 +1073,27 @@ public class ExamplePlugin extends JavaPlugin {
           .log(
               Level.FINE,
               "Orbital strike skipped for donor {0}: unable to find safe spawn locations.",
-              donor);
+              invocation.donor());
       return;
     }
 
     String mainTitle =
         applyTitlePlaceholders(
             settings.titleMain(),
-            donor,
-            amount,
-            formattedAmount,
-            currency,
-            donorMessage,
+            invocation.donor(),
+            invocation.amount(),
+            invocation.formattedAmount(),
+            invocation.currency(),
+            invocation.donorMessage(),
             spawnLocations.size());
     String subTitle =
         applyTitlePlaceholders(
             settings.titleSubtitle(),
-            donor,
-            amount,
-            formattedAmount,
-            currency,
-            donorMessage,
+            invocation.donor(),
+            invocation.amount(),
+            invocation.formattedAmount(),
+            invocation.currency(),
+            invocation.donorMessage(),
             spawnLocations.size());
 
     if (!mainTitle.isEmpty() || !subTitle.isEmpty()) {
@@ -1156,6 +1152,73 @@ public class ExamplePlugin extends JavaPlugin {
     passed &= checkTargetPlayer(messages);
 
     return new SelfTestResult(passed, List.copyOf(messages));
+  }
+
+  /** Attempts to trigger the orbital strike routine using the configured settings. */
+  public OrbitalStrikeDemoResult runOrbitalStrikeDemo() {
+    List<String> messages = new ArrayList<>();
+
+    if (settings == null) {
+      messages.add(
+          ChatColor.RED
+              + "Bridge settings are unavailable; reload the configuration first.");
+      return new OrbitalStrikeDemoResult(false, messages);
+    }
+
+    if (!settings.enabled()) {
+      messages.add(ChatColor.RED + "Bridge features are disabled in config.yml.");
+      return new OrbitalStrikeDemoResult(false, messages);
+    }
+
+    DonationSettings donationSettings = settings.donationSettings();
+    if (donationSettings == null || !donationSettings.enabled()) {
+      messages.add(ChatColor.RED + "Donation reactions are disabled in config.yml.");
+      return new OrbitalStrikeDemoResult(false, messages);
+    }
+
+    OrbitalStrikeSettings orbitalStrike = donationSettings.orbitalStrike();
+    if (orbitalStrike == null || !orbitalStrike.enabled()) {
+      messages.add(ChatColor.RED + "Orbital strike behaviour is disabled in config.yml.");
+      return new OrbitalStrikeDemoResult(false, messages);
+    }
+
+    Optional<Player> target = resolveConfiguredPlayer();
+    if (target.isEmpty()) {
+      messages.add(
+          ChatColor.RED + "No eligible target player is online for the orbital strike test.");
+      return new OrbitalStrikeDemoResult(false, messages);
+    }
+
+    Player player = target.get();
+    messages.add(
+        ChatColor.GREEN
+            + "Launching orbital strike test targeting "
+            + ChatColor.YELLOW
+            + player.getName()
+            + ChatColor.GREEN
+            + ".");
+
+    double demoAmount = Math.max(orbitalStrike.minAmount(), 1.0D);
+    String currency = Objects.requireNonNullElse(orbitalStrike.currency(), "");
+    String formattedAmount = formatAmountText(demoAmount, currency, null);
+
+    double finalAmount = demoAmount;
+    String finalCurrency = currency;
+    String finalFormattedAmount = formattedAmount;
+
+    OrbitalStrikeInvocation invocation =
+        new OrbitalStrikeInvocation(
+            player,
+            "Debug Supporter",
+            "This is only a test of the orbital strike cannon.",
+            finalFormattedAmount,
+            finalAmount,
+            finalCurrency,
+            orbitalStrike);
+
+    runOnMainThread(() -> triggerOrbitalStrike(invocation));
+
+    return new OrbitalStrikeDemoResult(true, messages);
   }
 
   private boolean checkBridgeSettings(List<String> messages) {
@@ -1319,6 +1382,42 @@ public class ExamplePlugin extends JavaPlugin {
       return messages;
     }
   }
+
+  /** Result of {@link #runOrbitalStrikeDemo()}. */
+  public static final class OrbitalStrikeDemoResult {
+    private final boolean triggered;
+    private final List<String> messages;
+
+    /**
+     * Creates a new immutable orbital strike demo result.
+     *
+     * @param triggered whether the strike routine was started
+     * @param messages diagnostic messages gathered during the attempt
+     */
+    public OrbitalStrikeDemoResult(boolean triggered, List<String> messages) {
+      this.triggered = triggered;
+      this.messages = Collections.unmodifiableList(new ArrayList<>(messages));
+    }
+
+    /** Returns {@code true} when the strike routine was triggered. */
+    public boolean triggered() {
+      return triggered;
+    }
+
+    /** Returns the immutable list of diagnostic messages. */
+    public List<String> messages() {
+      return messages;
+    }
+  }
+
+  private record OrbitalStrikeInvocation(
+      Player player,
+      String donor,
+      String donorMessage,
+      String formattedAmount,
+      Double amount,
+      String currency,
+      OrbitalStrikeSettings settings) {}
 
   private void loadSubscriberState() {
     FileConfiguration config = getConfig();
