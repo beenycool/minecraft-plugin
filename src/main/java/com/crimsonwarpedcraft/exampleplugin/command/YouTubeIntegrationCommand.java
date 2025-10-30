@@ -20,6 +20,7 @@ public class YouTubeIntegrationCommand implements CommandExecutor, TabCompleter 
 
   private static final List<String> SUBCOMMANDS =
       Arrays.asList("setchat", "settarget", "reload", "test");
+  private static final String ORBITAL_STRIKE_SCENARIO = "orbitalstrike";
   private final ExamplePlugin plugin;
 
   /**
@@ -123,7 +124,9 @@ public class YouTubeIntegrationCommand implements CommandExecutor, TabCompleter 
             + ChatColor.YELLOW
             + " (try /"
             + label
-            + " test orbitalstrike)");
+            + " test "
+            + ORBITAL_STRIKE_SCENARIO
+            + ")");
   }
 
   @Override
@@ -162,7 +165,7 @@ public class YouTubeIntegrationCommand implements CommandExecutor, TabCompleter 
     if (args.length == 2 && "test".equalsIgnoreCase(args[0])) {
       String prefix = args[1].toLowerCase();
       List<String> suggestions = new ArrayList<>();
-      for (String option : Arrays.asList("orbitalstrike")) {
+      for (String option : List.of(ORBITAL_STRIKE_SCENARIO)) {
         if (option.startsWith(prefix)) {
           suggestions.add(option);
         }
@@ -193,29 +196,27 @@ public class YouTubeIntegrationCommand implements CommandExecutor, TabCompleter 
 
     String scenario = args[1].toLowerCase();
     switch (scenario) {
-      case "orbital":
-      case "orbitalstrike":
-      case "donation":
+      case ORBITAL_STRIKE_SCENARIO:
         return handleOrbitalStrikeTest(sender);
       default:
         sender.sendMessage(
             ChatColor.RED
                 + "Unknown test scenario. Available options:"
                 + ChatColor.YELLOW
-                + " orbitalstrike");
+                + " "
+                + ORBITAL_STRIKE_SCENARIO);
         return true;
     }
   }
 
   private boolean handleOrbitalStrikeTest(CommandSender sender) {
     ExamplePlugin.OrbitalStrikeDemoResult result = plugin.runOrbitalStrikeDemo();
-    for (String line : result.messages()) {
-      sender.sendMessage(line);
-    }
     if (!result.triggered()) {
+      result.messages().forEach(sender::sendMessage);
       sender.sendMessage(ChatColor.RED + "Orbital strike test could not be started.");
       return true;
     }
+    result.messages().forEach(sender::sendMessage);
     sender.sendMessage(ChatColor.GREEN + "Orbital strike test launched successfully.");
     return true;
   }

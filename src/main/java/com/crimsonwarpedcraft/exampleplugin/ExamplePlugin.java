@@ -602,16 +602,17 @@ public class ExamplePlugin extends JavaPlugin {
     Double finalAmount = amount;
     String finalCurrency = currency;
 
-    runOnMainThread(
-        () ->
-            triggerOrbitalStrike(
-                player,
-                donor,
-                donorMessage,
-                formattedAmount,
-                finalAmount,
-                finalCurrency,
-                orbitalStrike));
+    OrbitalStrikeInvocation invocation =
+        new OrbitalStrikeInvocation(
+            player,
+            donor,
+            donorMessage,
+            formattedAmount,
+            finalAmount,
+            finalCurrency,
+            orbitalStrike);
+
+    runOnMainThread(() -> triggerOrbitalStrike(invocation));
   }
 
   private void handleStructuredMilestone(JsonObject payload) {
@@ -1028,14 +1029,8 @@ public class ExamplePlugin extends JavaPlugin {
     }.runTaskTimer(this, 0L, milestoneSettings.tickInterval());
   }
 
-  private void triggerOrbitalStrike(
-      Player player,
-      String donor,
-      String donorMessage,
-      String formattedAmount,
-      Double amount,
-      String currency,
-      OrbitalStrikeSettings settings) {
+  private void triggerOrbitalStrike(OrbitalStrikeInvocation invocation) {
+    Player player = invocation.player();
     if (player == null || !player.isOnline()) {
       return;
     }
@@ -1050,6 +1045,7 @@ public class ExamplePlugin extends JavaPlugin {
       return;
     }
 
+    OrbitalStrikeSettings settings = invocation.settings();
     double cappedRadius = Math.max(0.0D, settings.radius());
     double baseY =
         Math.max(
@@ -1077,27 +1073,27 @@ public class ExamplePlugin extends JavaPlugin {
           .log(
               Level.FINE,
               "Orbital strike skipped for donor {0}: unable to find safe spawn locations.",
-              donor);
+              invocation.donor());
       return;
     }
 
     String mainTitle =
         applyTitlePlaceholders(
             settings.titleMain(),
-            donor,
-            amount,
-            formattedAmount,
-            currency,
-            donorMessage,
+            invocation.donor(),
+            invocation.amount(),
+            invocation.formattedAmount(),
+            invocation.currency(),
+            invocation.donorMessage(),
             spawnLocations.size());
     String subTitle =
         applyTitlePlaceholders(
             settings.titleSubtitle(),
-            donor,
-            amount,
-            formattedAmount,
-            currency,
-            donorMessage,
+            invocation.donor(),
+            invocation.amount(),
+            invocation.formattedAmount(),
+            invocation.currency(),
+            invocation.donorMessage(),
             spawnLocations.size());
 
     if (!mainTitle.isEmpty() || !subTitle.isEmpty()) {
@@ -1204,28 +1200,23 @@ public class ExamplePlugin extends JavaPlugin {
 
     double demoAmount = Math.max(orbitalStrike.minAmount(), 1.0D);
     String currency = Objects.requireNonNullElse(orbitalStrike.currency(), "");
-    String formattedAmount;
-    if (currency.isBlank()) {
-      formattedAmount = String.format(Locale.US, "%.2f", demoAmount);
-    } else {
-      formattedAmount =
-          currency.toUpperCase(Locale.ROOT) + " " + String.format(Locale.US, "%.2f", demoAmount);
-    }
+    String formattedAmount = formatAmountText(demoAmount, currency, null);
 
     double finalAmount = demoAmount;
     String finalCurrency = currency;
     String finalFormattedAmount = formattedAmount;
 
-    runOnMainThread(
-        () ->
-            triggerOrbitalStrike(
-                player,
-                "Debug Supporter",
-                "This is only a test of the orbital strike cannon.",
-                finalFormattedAmount,
-                finalAmount,
-                finalCurrency,
-                orbitalStrike));
+    OrbitalStrikeInvocation invocation =
+        new OrbitalStrikeInvocation(
+            player,
+            "Debug Supporter",
+            "This is only a test of the orbital strike cannon.",
+            finalFormattedAmount,
+            finalAmount,
+            finalCurrency,
+            orbitalStrike);
+
+    runOnMainThread(() -> triggerOrbitalStrike(invocation));
 
     return new OrbitalStrikeDemoResult(true, messages);
   }
@@ -1418,6 +1409,15 @@ public class ExamplePlugin extends JavaPlugin {
       return messages;
     }
   }
+
+  private record OrbitalStrikeInvocation(
+      Player player,
+      String donor,
+      String donorMessage,
+      String formattedAmount,
+      Double amount,
+      String currency,
+      OrbitalStrikeSettings settings) {}
 
   private void loadSubscriberState() {
     FileConfiguration config = getConfig();
