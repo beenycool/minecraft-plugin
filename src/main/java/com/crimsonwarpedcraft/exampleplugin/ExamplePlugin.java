@@ -24,6 +24,7 @@ import java.security.SecureRandom;
 import java.time.Instant;
 import java.time.format.DateTimeParseException;
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Locale;
@@ -1134,6 +1135,182 @@ public class ExamplePlugin extends JavaPlugin {
     listenerScriptPath = listenerSettings.listenerScript();
     if (bridge != null) {
       bridge.setSubscriberMilestoneInterval(settings.subscriberMilestoneInterval());
+    }
+  }
+
+  /** Runs a series of sanity checks to ensure the integration is ready to use. */
+  public SelfTestResult runIntegrationSelfTest() {
+    List<String> messages = new ArrayList<>();
+    boolean passed = true;
+
+    passed &= checkBridgeSettings(messages);
+    passed &= checkBridgeInitialisation(messages);
+    passed &= checkListenerProcess(messages);
+    passed &= checkListenerConfiguration(messages);
+    passed &= checkTargetPlayer(messages);
+
+    return new SelfTestResult(passed, List.copyOf(messages));
+  }
+
+  private boolean checkBridgeSettings(List<String> messages) {
+    if (settings == null) {
+      messages.add(ChatColor.RED + "Bridge settings could not be loaded from config.yml.");
+      return false;
+    }
+
+    if (settings.enabled()) {
+      messages.add(ChatColor.GREEN + "Bridge features are enabled in config.yml.");
+    } else {
+      messages.add(ChatColor.YELLOW + "Bridge features are currently disabled in config.yml.");
+    }
+    return true;
+  }
+
+  private boolean checkBridgeInitialisation(List<String> messages) {
+    if (bridge == null) {
+      messages.add(ChatColor.RED + "YouTube chat bridge has not been initialised.");
+      return false;
+    }
+
+    messages.add(ChatColor.GREEN + "YouTube chat bridge is initialised.");
+    return true;
+  }
+
+  private boolean checkListenerProcess(List<String> messages) {
+    if (listenerProcess == null) {
+      messages.add(ChatColor.RED + "Listener process is not available. Monitoring cannot start.");
+      return false;
+    }
+
+    if (listenerProcess.isRunning()) {
+      messages.add(ChatColor.GREEN + "Listener process handler is ready and running.");
+      return true;
+    }
+
+    messages.add(
+        ChatColor.RED
+            + "Listener process handler is available but not running. "
+            + "Restart it with /ytstream start.");
+    return false;
+  }
+
+  private boolean checkListenerConfiguration(List<String> messages) {
+    if (listenerSettings == null) {
+      messages.add(ChatColor.RED + "Listener settings are missing from config.yml.");
+      return false;
+    }
+
+    boolean passed = true;
+    String listenerUrl = listenerSettings.listenerUrl();
+    boolean usingExternal = listenerUrl != null && !listenerUrl.isBlank();
+    String streamIdentifier = listenerSettings.streamIdentifier();
+
+    if (usingExternal) {
+      messages.add(
+          ChatColor.GREEN
+              + "External listener URL configured: "
+              + ChatColor.YELLOW
+              + listenerUrl
+              + ChatColor.GREEN
+              + ".");
+      return true;
+    }
+
+    if (streamIdentifier == null || streamIdentifier.isBlank()) {
+      messages.add(
+          ChatColor.RED
+              + "No YouTube stream identifier configured. Set one with /ytstream setchat.");
+      passed = false;
+    } else {
+      messages.add(
+          ChatColor.GREEN
+              + "Stream identifier configured: "
+              + ChatColor.YELLOW
+              + streamIdentifier
+              + ChatColor.GREEN
+              + ".");
+    }
+
+    File scriptFile = getListenerScriptFile();
+    if (scriptFile.exists()) {
+      if (scriptFile.canExecute()) {
+        messages.add(
+            ChatColor.GREEN
+                + "Listener script present and executable at "
+                + ChatColor.YELLOW
+                + scriptFile.getAbsolutePath()
+                + ChatColor.GREEN
+                + ".");
+      } else {
+        messages.add(
+            ChatColor.YELLOW
+                + "Listener script present at "
+                + ChatColor.GOLD
+                + scriptFile.getAbsolutePath()
+                + ChatColor.YELLOW
+                + " but is not marked executable.");
+      }
+    } else {
+      messages.add(
+          ChatColor.RED
+              + "Listener script could not be found at "
+              + ChatColor.YELLOW
+              + scriptFile.getAbsolutePath()
+              + ChatColor.RED
+              + ".");
+      passed = false;
+    }
+
+    return passed;
+  }
+
+  private boolean checkTargetPlayer(List<String> messages) {
+    String targetIgn = listenerSettings != null ? listenerSettings.targetIgn() : "";
+    String fallbackTarget = settings != null ? settings.targetPlayer() : "";
+    String effectiveTarget =
+        (targetIgn != null && !targetIgn.isBlank()) ? targetIgn : fallbackTarget;
+
+    if (effectiveTarget == null || effectiveTarget.isBlank()) {
+      messages.add(
+          ChatColor.RED
+              + "No target player configured. Set one with /ytstream settarget or in config.yml.");
+      return false;
+    }
+
+    messages.add(
+        ChatColor.GREEN
+            + "Target player configured as "
+            + ChatColor.YELLOW
+            + effectiveTarget
+            + ChatColor.GREEN
+            + ".");
+    return true;
+  }
+
+  /** Result of {@link #runIntegrationSelfTest()}. */
+  public static final class SelfTestResult {
+    private final boolean passed;
+    private final List<String> messages;
+
+    /**
+     * Creates a new immutable self-test result.
+     *
+     * @param passed whether the self-test succeeded
+     * @param messages diagnostic messages gathered during the test
+     */
+    public SelfTestResult(boolean passed, List<String> messages) {
+      this.passed = passed;
+      this.messages = Collections.unmodifiableList(new ArrayList<>(messages));
+    }
+
+    /** Returns {@code true} when all checks succeeded. */
+    public boolean passed() {
+      return passed;
+    }
+
+    /** Returns the immutable list of diagnostic messages. */
+    public List<String> messages() {
+      return messages;
     }
   }
 

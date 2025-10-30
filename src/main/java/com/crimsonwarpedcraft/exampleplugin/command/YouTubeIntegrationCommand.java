@@ -18,7 +18,8 @@ import org.bukkit.entity.Player;
  */
 public class YouTubeIntegrationCommand implements CommandExecutor, TabCompleter {
 
-  private static final List<String> SUBCOMMANDS = Arrays.asList("setchat", "settarget", "reload");
+  private static final List<String> SUBCOMMANDS =
+      Arrays.asList("setchat", "settarget", "reload", "test");
   private final ExamplePlugin plugin;
 
   /**
@@ -58,6 +59,8 @@ public class YouTubeIntegrationCommand implements CommandExecutor, TabCompleter 
                 + "Reloaded YouTube stream configuration and "
                 + "restarted monitoring.");
         return true;
+      case "test":
+        return handleSelfTest(sender);
       default:
         sendUsage(sender, label);
         return true;
@@ -112,7 +115,7 @@ public class YouTubeIntegrationCommand implements CommandExecutor, TabCompleter 
   }
 
   private void sendUsage(CommandSender sender, String label) {
-    sender.sendMessage(ChatColor.RED + "Usage: /" + label + " <setchat|settarget|reload>");
+    sender.sendMessage(ChatColor.RED + "Usage: /" + label + " <setchat|settarget|reload|test>");
   }
 
   @Override
@@ -149,5 +152,21 @@ public class YouTubeIntegrationCommand implements CommandExecutor, TabCompleter 
     }
 
     return Collections.emptyList();
+  }
+
+  private boolean handleSelfTest(CommandSender sender) {
+    ExamplePlugin.SelfTestResult result = plugin.runIntegrationSelfTest();
+    sender.sendMessage(ChatColor.YELLOW + "YouTube integration self-test results:");
+    for (String line : result.messages()) {
+      sender.sendMessage(line);
+    }
+    if (result.passed()) {
+      sender.sendMessage(ChatColor.GREEN + "All checks passed successfully.");
+    } else {
+      sender.sendMessage(
+          ChatColor.RED
+              + "One or more checks failed. Review the messages above before going live.");
+    }
+    return true;
   }
 }
