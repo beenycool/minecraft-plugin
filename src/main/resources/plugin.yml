@@ -17,6 +17,11 @@ commands:
     aliases: [tt]
     permission: example.ttstream.use
     permission-message: "You do not have permission to manage the TikTok stream integration."
+  nightpunish:
+    description: Curse a player with eternal night and periodic deaths
+    usage: "/nightpunish <start|stop> <player> [minutes]"
+    permission: example.nightpunish.use
+    permission-message: "You do not have permission to wield the night curse."
 permissions:
   example.ytstream.use:
     description: Allows managing the YouTube stream chat bridge
@@ -30,3 +35,6 @@ permissions:
   example.ttstream.monitor:
     description: Allows receiving chat messages from the TikTok bridge
     default: true
+  example.nightpunish.use:
+    description: Allows casting the eternal night punishment on players
+    default: op
