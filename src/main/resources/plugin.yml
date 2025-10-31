@@ -11,10 +11,22 @@ commands:
     aliases: [yt]
     permission: example.ytstream.use
     permission-message: "You do not have permission to manage the YouTube stream integration."
+  ttstream:
+    description: Manage the TikTok chat bridge
+    usage: "/ttstream <setchat|settarget|reload>"
+    aliases: [tt]
+    permission: example.ttstream.use
+    permission-message: "You do not have permission to manage the TikTok stream integration."
 permissions:
   example.ytstream.use:
     description: Allows managing the YouTube stream chat bridge
     default: op
   example.ytstream.monitor:
     description: Allows receiving chat messages from the YouTube bridge
+    default: true
+  example.ttstream.use:
+    description: Allows managing the TikTok stream chat bridge
+    default: op
+  example.ttstream.monitor:
+    description: Allows receiving chat messages from the TikTok bridge
     default: true

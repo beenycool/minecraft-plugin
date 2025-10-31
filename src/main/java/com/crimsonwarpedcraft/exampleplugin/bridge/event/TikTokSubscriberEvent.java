@@ -4,19 +4,16 @@ import com.crimsonwarpedcraft.exampleplugin.bridge.PlatformChatBridge;
 import org.bukkit.event.Event;
 import org.bukkit.event.HandlerList;
 import org.jetbrains.annotations.NotNull;
-import org.jetbrains.annotations.Nullable;
 
-/**
- * Fired when the bridge reports a new subscriber.
- */
-public class YouTubeSubscriberEvent extends Event {
+/** Bukkit event fired when the TikTok bridge emits a subscriber notification. */
+public class TikTokSubscriberEvent extends Event {
 
   private static final HandlerList HANDLERS = new HandlerList();
 
   private final PlatformChatBridge.SubscriberNotification notification;
 
-  /** Creates a new subscriber event with the supplied notification. */
-  public YouTubeSubscriberEvent(@NotNull PlatformChatBridge.SubscriberNotification notification) {
+  /** Creates a new TikTok subscriber event. */
+  public TikTokSubscriberEvent(@NotNull PlatformChatBridge.SubscriberNotification notification) {
     super(!org.bukkit.Bukkit.isPrimaryThread());
     this.notification = notification;
   }
@@ -26,17 +23,11 @@ public class YouTubeSubscriberEvent extends Event {
     return notification;
   }
 
-  @Nullable
-  public String getInGameName() {
-    return notification.inGameName();
-  }
-
   @Override
   public @NotNull HandlerList getHandlers() {
     return HANDLERS;
   }
 
-  /** Bukkit boilerplate for event handlers. */
   public static HandlerList getHandlerList() {
     return HANDLERS;
   }

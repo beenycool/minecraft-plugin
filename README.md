@@ -74,6 +74,24 @@ as `/yt-listener` and `/yt-listener/events`, which plays nicely with Caddy route
 plugin's `config.yml`, set `youtube.listener-url` to the HTTPS URL that Caddy exposes (for example
 `https://example.hackclub.app/yt-listener/events`).
 
+### TikTok listener integration
+Alongside the YouTube bridge the plugin now supports events sourced from a TikTok listener. The new
+`tiktok` block in `config.yml` mirrors the existing YouTube options so you can point the bridge at a
+polling URL or external process, and `tiktok-bridge` exposes per-platform behaviour toggles (chat
+commands, follower milestones, and gift-triggered orbital strikes). Use the `/ttstream` management
+command to update the listener identifier or target player in-game:
+
+```text
+/ttstream setchat <listenerUrl>
+/ttstream settarget <player>
+/ttstream reload
+```
+
+Players who should receive TikTok chat relays require the `example.ttstream.monitor` permission
+while administrators can manage the integration with `example.ttstream.use`. The plugin persists
+follower counts to `tiktok-bridge-state` so milestone celebrations survive restarts just like the
+YouTube bridge.
+
 ### Browser Overlay for OBS
 When the HTTP endpoint is running, the listener also serves a lightweight overlay that you can add
 as an OBS browser source. Point the source at the `/overlay` path matching your prefix, for example:
