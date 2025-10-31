@@ -1,10 +1,13 @@
 package com.crimsonwarpedcraft.exampleplugin;
 
+import com.crimsonwarpedcraft.exampleplugin.bridge.PlatformChatBridge;
+import com.crimsonwarpedcraft.exampleplugin.bridge.PlatformChatBridge.ChatMessage;
+import com.crimsonwarpedcraft.exampleplugin.bridge.PlatformChatBridge.Registration;
+import com.crimsonwarpedcraft.exampleplugin.bridge.PlatformChatBridge.SubscriberMilestone;
+import com.crimsonwarpedcraft.exampleplugin.bridge.PlatformChatBridge.SubscriberNotification;
+import com.crimsonwarpedcraft.exampleplugin.bridge.TikTokChatBridge;
 import com.crimsonwarpedcraft.exampleplugin.bridge.YouTubeChatBridge;
-import com.crimsonwarpedcraft.exampleplugin.bridge.YouTubeChatBridge.ChatMessage;
-import com.crimsonwarpedcraft.exampleplugin.bridge.YouTubeChatBridge.Registration;
-import com.crimsonwarpedcraft.exampleplugin.bridge.YouTubeChatBridge.SubscriberMilestone;
-import com.crimsonwarpedcraft.exampleplugin.bridge.YouTubeChatBridge.SubscriberNotification;
+import com.crimsonwarpedcraft.exampleplugin.command.TikTokIntegrationCommand;
 import com.crimsonwarpedcraft.exampleplugin.command.YouTubeIntegrationCommand;
 import com.crimsonwarpedcraft.exampleplugin.service.WorldResetScheduler; // Added from codex branch
 import com.google.gson.JsonElement;
@@ -25,9 +28,11 @@ import java.time.Instant;
 import java.time.format.DateTimeParseException;
 import java.util.ArrayList;
 import java.util.Collections;
+import java.util.EnumMap;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Locale;
+import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
 import java.util.Set;
@@ -55,26 +60,72 @@ public class ExamplePlugin extends JavaPlugin {
 
   private static final String DEFAULT_LISTENER_SCRIPT = "python/chat_listener.py";
 
+  private enum StreamPlatform {
+    YOUTUBE("youtube", "YouTube", "example.ytstream.monitor"),
+    TIKTOK("tiktok", "TikTok", "example.ttstream.monitor");
+
+    private final String id;
+    private final String displayName;
+    private final String monitorPermission;
+
+    StreamPlatform(String id, String displayName, String monitorPermission) {
+      this.id = id;
+      this.displayName = displayName;
+      this.monitorPermission = monitorPermission;
+    }
+
+    String id() {
+      return id;
+    }
+
+    String displayName() {
+      return displayName;
+    }
+
+    String monitorPermission() {
+      return monitorPermission;
+    }
+
+    static StreamPlatform fromId(String candidate) {
+      if (candidate == null || candidate.isBlank()) {
+        return null;
+      }
+      String normalized = candidate.trim().toLowerCase(Locale.ROOT);
+      return switch (normalized) {
+        case "tiktok", "tt", "tik_tok" -> TIKTOK;
+        case "youtube", "yt" -> YOUTUBE;
+        default -> null;
+      };
+    }
+  }
+
   private final AtomicLong messageSequence = new AtomicLong();
 
   // Fields from codex branch
   private WorldResetScheduler worldResetScheduler;
 
   // Fields from main branch
-  private YouTubeChatBridge bridge;
+  private YouTubeChatBridge youtubeBridge;
+  private TikTokChatBridge tikTokBridge;
+  private final EnumMap<StreamPlatform, PlatformChatBridge> activeBridges =
+      new EnumMap<>(StreamPlatform.class);
   private final List<Registration> registrations = new ArrayList<>();
   private final SecureRandom secureRandom = new SecureRandom();
-  private BridgeSettings settings;
-  @SuppressFBWarnings(
-      value = "AT_NONATOMIC_64BIT_PRIMITIVE",
-      justification = "Access occurs on the server main thread so atomicity is unnecessary.")
-  private long knownSubscriberCount;
-  private long lastCelebratedMilestone;
+  private final EnumMap<StreamPlatform, BridgeSettings> platformSettings =
+      new EnumMap<>(StreamPlatform.class);
+  private final EnumMap<StreamPlatform, Long> knownSubscriberCounts =
+      new EnumMap<>(StreamPlatform.class);
+  private final EnumMap<StreamPlatform, Long> lastCelebratedMilestones =
+      new EnumMap<>(StreamPlatform.class);
 
   // Fields for the external Python listener bridge
-  private com.crimsonwarpedcraft.exampleplugin.service.YouTubeChatBridge listenerProcess;
-  private ListenerSettings listenerSettings;
-  private String listenerScriptPath;
+  private final EnumMap<StreamPlatform,
+          com.crimsonwarpedcraft.exampleplugin.service.YouTubeChatBridge>
+      listenerProcesses = new EnumMap<>(StreamPlatform.class);
+  private ListenerSettings youtubeListenerSettings;
+  private ListenerSettings tikTokListenerSettings;
+  private final EnumMap<StreamPlatform, String> listenerScriptPaths =
+      new EnumMap<>(StreamPlatform.class);
 
   @Override
   public void onEnable() {
@@ -87,23 +138,33 @@ public class ExamplePlugin extends JavaPlugin {
     loadSubscriberState();
     ensureListenerScriptAvailable();
 
-    listenerProcess = new com.crimsonwarpedcraft.exampleplugin.service.YouTubeChatBridge(this);
+    for (StreamPlatform platform : StreamPlatform.values()) {
+      listenerProcesses.put(
+          platform,
+          new com.crimsonwarpedcraft.exampleplugin.service.YouTubeChatBridge(
+              this,
+              platform.displayName(),
+              (message, targetIgn) ->
+                  handleIncomingListenerMessage(platform, message, targetIgn)));
+    }
 
     // Logic from codex branch
     worldResetScheduler = new WorldResetScheduler(this);
     worldResetScheduler.start();
 
     // Logic from main branch
-    bridge = new YouTubeChatBridge(this);
-    bridge.setSubscriberMilestoneInterval(settings.subscriberMilestoneInterval());
-    registrations.add(bridge.registerChatListener(this::handleChatMessage));
-    registrations.add(bridge.registerSubscriberListener(this::handleSubscriberNotification));
-    registrations.add(bridge.registerMilestoneListener(this::handleMilestone));
+    youtubeBridge = new YouTubeChatBridge(this);
+    tikTokBridge = new TikTokChatBridge(this);
+    activeBridges.put(StreamPlatform.YOUTUBE, youtubeBridge);
+    activeBridges.put(StreamPlatform.TIKTOK, tikTokBridge);
+
+    bindBridge(StreamPlatform.YOUTUBE, youtubeBridge);
+    bindBridge(StreamPlatform.TIKTOK, tikTokBridge);
 
     registerCommands();
     restartMonitoring();
 
-    getLogger().info("YouTube bridge initialised. Awaiting events from Python listener.");
+    getLogger().info("Stream bridges initialised. Awaiting events from listener processes.");
   }
 
   @Override
@@ -113,18 +174,25 @@ public class ExamplePlugin extends JavaPlugin {
       worldResetScheduler.cancel();
     }
 
-    if (listenerProcess != null) {
-      com.crimsonwarpedcraft.exampleplugin.service.YouTubeChatBridge process = listenerProcess;
-      listenerProcess = null;
-      stopListenerProcessAsync(process, null);
+    if (!listenerProcesses.isEmpty()) {
+      List<com.crimsonwarpedcraft.exampleplugin.service.YouTubeChatBridge> processes =
+          new ArrayList<>(listenerProcesses.values());
+      listenerProcesses.clear();
+      for (com.crimsonwarpedcraft.exampleplugin.service.YouTubeChatBridge process : processes) {
+        stopListenerProcessAsync(process, null);
+      }
     }
 
     // Logic from main branch
     registrations.forEach(Registration::close);
     registrations.clear();
-    bridge = null;
-    knownSubscriberCount = 0L;
-    lastCelebratedMilestone = 0L;
+    youtubeBridge = null;
+    tikTokBridge = null;
+    activeBridges.clear();
+    platformSettings.clear();
+    knownSubscriberCounts.clear();
+    lastCelebratedMilestones.clear();
+    listenerScriptPaths.clear();
   }
 
   // Methods below coordinate the YouTube bridge behaviours
@@ -134,7 +202,15 @@ public class ExamplePlugin extends JavaPlugin {
       value = "EI_EXPOSE_REP",
       justification = "Bridge is intentionally shared so other components can subscribe to events.")
   public YouTubeChatBridge getYouTubeChatBridge() {
-    return bridge;
+    return youtubeBridge;
+  }
+
+  /** Returns the active TikTok chat bridge instance. */
+  @SuppressFBWarnings(
+      value = "EI_EXPOSE_REP",
+      justification = "Bridge is intentionally shared so other components can subscribe to events.")
+  public TikTokChatBridge getTikTokChatBridge() {
+    return tikTokBridge;
   }
 
   private void registerCommands() {
@@ -142,48 +218,73 @@ public class ExamplePlugin extends JavaPlugin {
     if (command == null) {
       getLogger()
           .warning("Failed to register /ytstream command; command not defined in plugin.yml");
-      return;
+    } else {
+      YouTubeIntegrationCommand executor = new YouTubeIntegrationCommand(this);
+      command.setExecutor(executor);
+      command.setTabCompleter(executor);
     }
 
-    YouTubeIntegrationCommand executor = new YouTubeIntegrationCommand(this);
-    command.setExecutor(executor);
-    command.setTabCompleter(executor);
+    PluginCommand tiktokCommand = getCommand("ttstream");
+    if (tiktokCommand == null) {
+      getLogger()
+          .warning("Failed to register /ttstream command; command not defined in plugin.yml");
+    } else {
+      TikTokIntegrationCommand tikTokExecutor = new TikTokIntegrationCommand(this);
+      tiktokCommand.setExecutor(tikTokExecutor);
+      tiktokCommand.setTabCompleter(tikTokExecutor);
+    }
   }
 
   /** Restarts the external Python listener process using the cached configuration. */
   public void restartMonitoring() {
-    if (listenerProcess == null) {
+    if (listenerProcesses.isEmpty()) {
       return;
     }
 
-    com.crimsonwarpedcraft.exampleplugin.service.YouTubeChatBridge process = listenerProcess;
+    for (StreamPlatform platform : StreamPlatform.values()) {
+      restartMonitoring(platform);
+    }
+  }
 
-    if (listenerSettings == null) {
+  private void restartMonitoring(StreamPlatform platform) {
+    com.crimsonwarpedcraft.exampleplugin.service.YouTubeChatBridge process =
+        listenerProcesses.get(platform);
+    if (process == null) {
+      return;
+    }
+
+    ListenerSettings settings = getListenerSettings(platform);
+    if (settings == null) {
       stopListenerProcessAsync(process, null);
       return;
     }
 
-    final String listenerUrl = listenerSettings.listenerUrl();
+    final String listenerUrl = settings.listenerUrl();
     boolean useExternalListener = listenerUrl != null && !listenerUrl.isBlank();
 
-    String streamIdentifier = listenerSettings.streamIdentifier();
+    String streamIdentifier = settings.streamIdentifier();
     if (!useExternalListener && (streamIdentifier == null || streamIdentifier.isBlank())) {
-      getLogger().warning("No YouTube stream identifier configured; skipping listener start.");
+      String warning =
+          "No "
+              + platform.displayName()
+              + " stream identifier configured; skipping listener start.";
+      getLogger().warning(warning);
       stopListenerProcessAsync(process, null);
       return;
     }
 
     final File listenerScript;
     if (!useExternalListener) {
-      ensureListenerScriptAvailable();
-      listenerScript = getListenerScriptFile();
+      ensureListenerScriptAvailable(platform);
+      listenerScript = getListenerScriptFile(platform);
     } else {
       listenerScript = null;
     }
 
-    String targetIgn = listenerSettings.targetIgn();
-    if ((targetIgn == null || targetIgn.isBlank()) && settings != null) {
-      targetIgn = settings.targetPlayer();
+    String targetIgn = settings.targetIgn();
+    BridgeSettings platformSettings = getBridgeSettings(platform);
+    if ((targetIgn == null || targetIgn.isBlank()) && platformSettings != null) {
+      targetIgn = platformSettings.targetPlayer();
     }
 
     String finalTarget = targetIgn;
@@ -192,13 +293,32 @@ public class ExamplePlugin extends JavaPlugin {
         () ->
             startListenerProcess(
                 process,
-                listenerSettings.pythonExecutable(),
+                settings.pythonExecutable(),
                 listenerScript,
                 streamIdentifier,
-                listenerSettings.pollingIntervalSeconds(),
+                settings.pollingIntervalSeconds(),
                 finalTarget,
-                listenerSettings.streamlabsSocketToken(),
+                settings.streamlabsSocketToken(),
                 listenerUrl));
+  }
+
+  private void bindBridge(StreamPlatform platform, PlatformChatBridge bridgeInstance) {
+    if (bridgeInstance == null) {
+      return;
+    }
+
+    BridgeSettings settings = platformSettings.get(platform);
+    long interval = settings != null ? settings.subscriberMilestoneInterval() : 0L;
+    bridgeInstance.setSubscriberMilestoneInterval(interval);
+
+    registrations.add(
+        bridgeInstance.registerChatListener(message -> handleChatMessage(platform, message)));
+    registrations.add(
+        bridgeInstance.registerSubscriberListener(
+            notification -> handleSubscriberNotification(platform, notification)));
+    registrations.add(
+        bridgeInstance.registerMilestoneListener(
+            milestone -> handleMilestone(platform, milestone)));
   }
 
   private void startListenerProcess(
@@ -277,11 +397,19 @@ public class ExamplePlugin extends JavaPlugin {
   }
 
   private void ensureListenerScriptAvailable() {
-    if (listenerScriptPath == null || listenerScriptPath.isBlank()) {
-      listenerScriptPath = DEFAULT_LISTENER_SCRIPT;
+    for (StreamPlatform platform : StreamPlatform.values()) {
+      ensureListenerScriptAvailable(platform);
+    }
+  }
+
+  private void ensureListenerScriptAvailable(StreamPlatform platform) {
+    String configuredPath = listenerScriptPaths.get(platform);
+    if (configuredPath == null || configuredPath.isBlank()) {
+      configuredPath = DEFAULT_LISTENER_SCRIPT;
+      listenerScriptPaths.put(platform, configuredPath);
     }
 
-    File scriptFile = getListenerScriptFile();
+    File scriptFile = getListenerScriptFile(platform);
     if (scriptFile.exists()) {
       return;
     }
@@ -310,13 +438,17 @@ public class ExamplePlugin extends JavaPlugin {
                     + scriptFile.getAbsolutePath());
       }
       getLogger()
-          .info("Extracted default YouTube listener script to " + scriptFile.getAbsolutePath());
+          .info(
+              "Extracted default listener script for "
+                  + platform.displayName()
+                  + " to "
+                  + scriptFile.getAbsolutePath());
     } catch (IOException e) {
       getLogger().log(Level.SEVERE, "Failed to extract listener script", e);
     }
   }
 
-  private File getListenerScriptFile() {
+  private File getListenerScriptFile(StreamPlatform platform) {
     File dataFolder = getDataFolder();
     if (!dataFolder.exists() && !dataFolder.mkdirs()) {
       getLogger()
@@ -333,9 +465,10 @@ public class ExamplePlugin extends JavaPlugin {
       base = dataFolder.toPath().toAbsolutePath().normalize();
     }
 
-    String configuredPath = listenerScriptPath;
+    String configuredPath = listenerScriptPaths.get(platform);
     if (configuredPath == null || configuredPath.isBlank()) {
       configuredPath = DEFAULT_LISTENER_SCRIPT;
+      listenerScriptPaths.put(platform, configuredPath);
     }
 
     Path candidate;
@@ -434,16 +567,26 @@ public class ExamplePlugin extends JavaPlugin {
 
   /** Handles chat lines emitted by the Python listener. */
   public void handleIncomingYouTubeMessage(String message, String targetIgn) {
+    handleIncomingListenerMessage(StreamPlatform.YOUTUBE, message, targetIgn);
+  }
+
+  /** Handles chat lines emitted by the TikTok listener. */
+  public void handleIncomingTikTokMessage(String message, String targetIgn) {
+    handleIncomingListenerMessage(StreamPlatform.TIKTOK, message, targetIgn);
+  }
+
+  private void handleIncomingListenerMessage(
+      StreamPlatform platform, String message, String targetIgn) {
     if (message == null || message.isBlank()) {
       return;
     }
 
     String trimmed = message.trim();
-    if (handleStructuredListenerPayload(trimmed, targetIgn)) {
+    if (handleStructuredListenerPayload(trimmed, targetIgn, platform)) {
       return;
     }
 
-    String author = "YouTube";
+    String author = platform.displayName();
     String content = trimmed;
 
     int separatorIndex = trimmed.indexOf(':');
@@ -460,10 +603,11 @@ public class ExamplePlugin extends JavaPlugin {
       return;
     }
 
-    publishChatMessage(author, content, Instant.now(), null, targetIgn);
+    publishChatMessage(platform, author, content, Instant.now(), null, targetIgn);
   }
 
-  private boolean handleStructuredListenerPayload(String payload, String targetIgn) {
+  private boolean handleStructuredListenerPayload(
+      String payload, String targetIgn, StreamPlatform fallbackPlatform) {
     JsonObject root;
     try {
       JsonElement parsed = JsonParser.parseString(payload);
@@ -476,33 +620,58 @@ public class ExamplePlugin extends JavaPlugin {
     }
 
     String type = jsonString(root, "type");
+    StreamPlatform platform =
+        root.has("platform")
+            ? StreamPlatform.fromId(jsonString(root, "platform"))
+            : fallbackPlatform;
+    if (platform == null) {
+      String candidate = jsonString(root, "platform");
+      String fallbackName = fallbackPlatform != null ? fallbackPlatform.displayName() : "default";
+      if (candidate == null || candidate.isBlank()) {
+        String warning =
+            "Listener payload missing platform identifier; defaulting to " + fallbackName + ".";
+        getLogger().warning(warning);
+      } else {
+        String warning =
+            "Listener payload specified unknown platform '"
+                + candidate
+                + "'; defaulting to "
+                + fallbackName
+                + ".";
+        getLogger().warning(warning);
+      }
+      platform = fallbackPlatform;
+      if (platform == null) {
+        return false;
+      }
+    }
     if (type == null || type.isBlank()) {
       return false;
     }
 
     switch (type.toLowerCase(Locale.ROOT)) {
       case "chat" -> {
-        handleStructuredChat(root, targetIgn);
+        handleStructuredChat(platform, root, targetIgn);
         return true;
       }
       case "subscriber" -> {
-        handleStructuredSubscriber(root);
+        handleStructuredSubscriber(platform, root);
         return true;
       }
       case "donation" -> {
-        handleStructuredDonation(root);
+        handleStructuredDonation(platform, root);
         return true;
       }
       case "milestone" -> {
-        handleStructuredMilestone(root);
+        handleStructuredMilestone(platform, root);
         return true;
       }
       case "log", "status", "heartbeat" -> {
-        handleStructuredLog(root, Level.INFO);
+        handleStructuredLog(platform, root, Level.INFO);
         return true;
       }
       case "error" -> {
-        handleStructuredLog(root, Level.SEVERE);
+        handleStructuredLog(platform, root, Level.SEVERE);
         return true;
       }
       default -> {
@@ -511,8 +680,10 @@ public class ExamplePlugin extends JavaPlugin {
     }
   }
 
-  private void handleStructuredChat(JsonObject payload, String targetIgn) {
-    String author = Objects.requireNonNullElse(jsonString(payload, "author"), "YouTube");
+  private void handleStructuredChat(
+      StreamPlatform platform, JsonObject payload, String targetIgn) {
+    String author =
+        Objects.requireNonNullElse(jsonString(payload, "author"), platform.displayName());
     String message = jsonString(payload, "message");
     if (message == null || message.isBlank()) {
       return;
@@ -521,11 +692,12 @@ public class ExamplePlugin extends JavaPlugin {
     String channelId = jsonString(payload, "channelId");
     Instant timestamp = parseTimestamp(jsonString(payload, "timestamp"));
 
-    publishChatMessage(author, message, timestamp, channelId, targetIgn);
+    publishChatMessage(platform, author, message, timestamp, channelId, targetIgn);
   }
 
-  private void handleStructuredSubscriber(JsonObject payload) {
-    if (bridge == null) {
+  private void handleStructuredSubscriber(StreamPlatform platform, JsonObject payload) {
+    PlatformChatBridge bridgeInstance = activeBridges.get(platform);
+    if (bridgeInstance == null) {
       return;
     }
 
@@ -539,20 +711,21 @@ public class ExamplePlugin extends JavaPlugin {
       totalSubscribers = jsonLong(payload, "subscriberCount");
     }
     if (totalSubscribers == null || totalSubscribers < 0) {
-      totalSubscribers = knownSubscriberCount + 1;
+      totalSubscribers = getKnownSubscriberCount(platform) + 1;
     }
 
     String channelId = jsonString(payload, "channelId");
     Instant timestamp = parseTimestamp(jsonString(payload, "timestamp"));
-    String author =
-        Objects.requireNonNullElse(jsonString(payload, "author"), "YouTube Subscriber");
+    String defaultAuthor = platform.displayName() + " Subscriber";
+    String author = Objects.requireNonNullElse(jsonString(payload, "author"), defaultAuthor);
 
-    bridge.emitSubscriberNotification(
+    bridgeInstance.emitSubscriberNotification(
         new SubscriberNotification(author, ign, totalSubscribers, channelId, timestamp));
   }
 
-  private void handleStructuredDonation(JsonObject payload) {
-    if (!settings.enabled) {
+  private void handleStructuredDonation(StreamPlatform platform, JsonObject payload) {
+    BridgeSettings settings = getBridgeSettings(platform);
+    if (settings == null || !settings.enabled) {
       return;
     }
 
@@ -570,11 +743,7 @@ public class ExamplePlugin extends JavaPlugin {
     if (amount == null) {
       amount = jsonDouble(payload, "total");
     }
-    if (amount == null) {
-      return;
-    }
-
-    if (amount < orbitalStrike.minAmount()) {
+    if (amount == null || amount < orbitalStrike.minAmount()) {
       return;
     }
 
@@ -588,7 +757,7 @@ public class ExamplePlugin extends JavaPlugin {
       }
     }
 
-    Optional<Player> target = resolveConfiguredPlayer();
+    Optional<Player> target = resolveConfiguredPlayer(settings);
     if (target.isEmpty()) {
       return;
     }
@@ -597,24 +766,24 @@ public class ExamplePlugin extends JavaPlugin {
     String donor = Objects.requireNonNullElse(jsonString(payload, "author"), "Supporter");
     String donorMessage = jsonString(payload, "message");
     String formattedAmount = jsonString(payload, "formattedAmount");
-    Double finalAmount = amount;
-    String finalCurrency = currency;
 
     OrbitalStrikeInvocation invocation =
         new OrbitalStrikeInvocation(
+            platform,
             player,
             donor,
             donorMessage,
             formattedAmount,
-            finalAmount,
-            finalCurrency,
+            amount,
+            currency,
             orbitalStrike);
 
     runOnMainThread(() -> triggerOrbitalStrike(invocation));
   }
 
-  private void handleStructuredMilestone(JsonObject payload) {
-    if (bridge == null) {
+  private void handleStructuredMilestone(StreamPlatform platform, JsonObject payload) {
+    PlatformChatBridge bridgeInstance = activeBridges.get(platform);
+    if (bridgeInstance == null) {
       return;
     }
 
@@ -627,24 +796,34 @@ public class ExamplePlugin extends JavaPlugin {
     String channelId = jsonString(payload, "channelId");
     Instant timestamp = parseTimestamp(jsonString(payload, "timestamp"));
 
-    bridge.emitMilestone(new SubscriberMilestone(totalSubscribers, interval, channelId, timestamp));
+    bridgeInstance.emitMilestone(
+        new SubscriberMilestone(totalSubscribers, interval, channelId, timestamp));
   }
 
-  private void handleStructuredLog(JsonObject payload, Level fallbackLevel) {
+  private void handleStructuredLog(
+      StreamPlatform platform, JsonObject payload, Level fallbackLevel) {
     String message = jsonString(payload, "message");
     if (message == null || message.isBlank()) {
       return;
     }
 
     Level level = parseLogLevel(jsonString(payload, "level"), fallbackLevel);
-    getLogger().log(level, message);
+    String prefixed = "[" + platform.displayName() + "] " + message;
+    getLogger().log(level, prefixed);
   }
 
   private void publishChatMessage(
-      String author, String content, Instant timestamp, String channelId, String targetIgn) {
-    String resolvedAuthor = Objects.requireNonNullElse(author, "YouTube");
-    if (bridge != null) {
-      bridge.emitChatMessage(
+      StreamPlatform platform,
+      String author,
+      String content,
+      Instant timestamp,
+      String channelId,
+      String targetIgn) {
+    String resolvedAuthor =
+        author == null || author.isBlank() ? platform.displayName() : author;
+    PlatformChatBridge bridgeInstance = activeBridges.get(platform);
+    if (bridgeInstance != null) {
+      bridgeInstance.emitChatMessage(
           new ChatMessage(
               resolvedAuthor,
               content,
@@ -653,18 +832,23 @@ public class ExamplePlugin extends JavaPlugin {
               channelId));
     }
 
-    deliverChatToPlayers(resolvedAuthor, content, targetIgn);
+    deliverChatToPlayers(platform, resolvedAuthor, content, targetIgn);
   }
 
-  private void deliverChatToPlayers(String author, String content, String targetIgn) {
-    String resolvedAuthor = author == null || author.isBlank() ? "YouTube" : author;
+  private void deliverChatToPlayers(
+      StreamPlatform platform, String author, String content, String targetIgn) {
+    String resolvedAuthor =
+        author == null || author.isBlank() ? platform.displayName() : author;
+    String label = platform.displayName();
     String formatted;
-    if (resolvedAuthor.equals("YouTube")) {
-      formatted = ChatColor.RED + "[YouTube] " + ChatColor.WHITE + content;
+    if (resolvedAuthor.equals(label)) {
+      formatted = ChatColor.RED + "[" + label + "] " + ChatColor.WHITE + content;
     } else {
       formatted =
           ChatColor.RED
-              + "[YouTube] "
+              + "["
+              + label
+              + "] "
               + ChatColor.YELLOW
               + resolvedAuthor
               + ChatColor.WHITE
@@ -672,19 +856,48 @@ public class ExamplePlugin extends JavaPlugin {
               + content;
     }
 
+    String permission = platform.monitorPermission();
     if (targetIgn != null && !targetIgn.isBlank()) {
       Player player = Bukkit.getPlayerExact(targetIgn);
-      if (player != null
-          && player.isOnline()
-          && player.hasPermission("example.ytstream.monitor")) {
+      if (player != null && player.isOnline() && player.hasPermission(permission)) {
         player.sendMessage(formatted);
         return;
       }
     }
 
     Bukkit.getOnlinePlayers().stream()
-        .filter(player -> player.hasPermission("example.ytstream.monitor"))
+        .filter(player -> player.hasPermission(permission))
         .forEach(player -> player.sendMessage(formatted));
+  }
+
+  private BridgeSettings getBridgeSettings(StreamPlatform platform) {
+    return platformSettings.get(platform);
+  }
+
+  private ListenerSettings getListenerSettings(StreamPlatform platform) {
+    return platform == StreamPlatform.TIKTOK ? tikTokListenerSettings : youtubeListenerSettings;
+  }
+
+  private long getKnownSubscriberCount(StreamPlatform platform) {
+    return knownSubscriberCounts.getOrDefault(platform, 0L);
+  }
+
+  private boolean updateKnownSubscriberCount(StreamPlatform platform, long totalSubscribers) {
+    long current = getKnownSubscriberCount(platform);
+    long updated = Math.max(current, totalSubscribers);
+    if (updated != current) {
+      knownSubscriberCounts.put(platform, updated);
+      return true;
+    }
+    return false;
+  }
+
+  private long getLastCelebratedMilestone(StreamPlatform platform) {
+    return lastCelebratedMilestones.getOrDefault(platform, 0L);
+  }
+
+  private void recordLastCelebratedMilestone(StreamPlatform platform, long milestone) {
+    lastCelebratedMilestones.put(platform, Math.max(0L, milestone));
   }
 
   private Level parseLogLevel(String candidate, Level fallbackLevel) {
@@ -802,8 +1015,12 @@ public class ExamplePlugin extends JavaPlugin {
     return null;
   }
 
-  private void handleChatMessage(ChatMessage message) {
-    if (!settings.enabled || !settings.chatEnabled || !settings.chatTntEnabled) {
+  private void handleChatMessage(StreamPlatform platform, ChatMessage message) {
+    BridgeSettings settings = getBridgeSettings(platform);
+    if (settings == null
+        || !settings.enabled
+        || !settings.chatEnabled
+        || !settings.chatTntEnabled) {
       return;
     }
 
@@ -812,25 +1029,30 @@ public class ExamplePlugin extends JavaPlugin {
       return;
     }
 
-    Optional<Player> target = resolveConfiguredPlayer();
+    Optional<Player> target = resolveConfiguredPlayer(settings);
     if (target.isEmpty()) {
       return;
     }
 
     Player player = target.get();
-    if (spawnSingleTnt(
-        player.getLocation(), settings.chatTntFuseTicks, settings.chatTntVerticalOffset)) {
+    if (spawnSingleTnt(settings, player.getLocation())) {
       player
           .getWorld()
           .playSound(player.getLocation(), Sound.ENTITY_FIREWORK_ROCKET_LAUNCH, 1.0f, 1.0f);
     }
   }
 
-  private void handleSubscriberNotification(SubscriberNotification notification) {
+  private void handleSubscriberNotification(
+      StreamPlatform platform, SubscriberNotification notification) {
+    BridgeSettings settings = getBridgeSettings(platform);
+    if (settings == null) {
+      return;
+    }
+
     boolean subscriberCountChanged =
-        updateKnownSubscriberCount(notification.totalSubscribers());
+        updateKnownSubscriberCount(platform, notification.totalSubscribers());
     if (subscriberCountChanged) {
-      persistSubscriberState();
+      persistSubscriberState(platform);
     }
 
     if (!settings.enabled || !settings.subscriberKillEnabled) {
@@ -854,44 +1076,50 @@ public class ExamplePlugin extends JavaPlugin {
               if (target == null || !target.isOnline()) {
                 return;
               }
-              if (!isWorldAllowed(target.getWorld())) {
+              if (!isWorldAllowed(target.getWorld(), settings)) {
                 return;
               }
               target.setHealth(0.0);
             });
   }
 
-  private void handleMilestone(SubscriberMilestone milestone) {
-    updateKnownSubscriberCount(milestone.totalSubscribers());
+  private void handleMilestone(StreamPlatform platform, SubscriberMilestone milestone) {
+    BridgeSettings settings = getBridgeSettings(platform);
+    if (settings == null) {
+      return;
+    }
+
+    updateKnownSubscriberCount(platform, milestone.totalSubscribers());
 
     if (!settings.enabled || !settings.milestoneEnabled) {
       return;
     }
 
-    if (milestone.totalSubscribers() <= lastCelebratedMilestone) {
+    long lastMilestone = getLastCelebratedMilestone(platform);
+    if (milestone.totalSubscribers() <= lastMilestone) {
       return;
     }
 
-    Optional<Player> target = resolveConfiguredPlayer();
+    Optional<Player> target = resolveConfiguredPlayer(settings);
     if (target.isEmpty()) {
       return;
     }
 
     Player player = target.get();
-    spawnMilestoneCelebration(player, milestone);
-    lastCelebratedMilestone = milestone.totalSubscribers();
-    persistSubscriberState();
+    spawnMilestoneCelebration(settings, player, milestone);
+    recordLastCelebratedMilestone(platform, milestone.totalSubscribers());
+    persistSubscriberState(platform);
   }
 
-  private Optional<Player> resolveConfiguredPlayer() {
-    if (settings.targetPlayer == null || settings.targetPlayer.isBlank()) {
+  private Optional<Player> resolveConfiguredPlayer(BridgeSettings settings) {
+    if (settings == null || settings.targetPlayer == null || settings.targetPlayer.isBlank()) {
       return Optional.empty();
     }
     Player player = Bukkit.getPlayerExact(settings.targetPlayer);
     if (player == null || !player.isOnline()) {
       return Optional.empty();
     }
-    if (!isWorldAllowed(player.getWorld())) {
+    if (!isWorldAllowed(player.getWorld(), settings)) {
       return Optional.empty();
     }
     if (!player.getLocation().getChunk().isLoaded()) {
@@ -900,26 +1128,30 @@ public class ExamplePlugin extends JavaPlugin {
     return Optional.of(player);
   }
 
-  private boolean isWorldAllowed(World world) {
+  private boolean isWorldAllowed(World world, BridgeSettings settings) {
+    if (settings == null) {
+      return false;
+    }
     return settings.allowedWorlds.isEmpty()
         || settings.allowedWorlds.contains(world.getName().toLowerCase(Locale.ROOT));
   }
 
-  private boolean spawnSingleTnt(Location baseLocation, int fuseTicks, double verticalOffset) {
-    Location spawnLocation = baseLocation.clone().add(new Vector(0, verticalOffset, 0));
-    if (!canSpawnTnt(spawnLocation)) {
+  private boolean spawnSingleTnt(BridgeSettings settings, Location baseLocation) {
+    Location spawnLocation =
+        baseLocation.clone().add(new Vector(0, settings.chatTntVerticalOffset(), 0));
+    if (!canSpawnTnt(spawnLocation, settings)) {
       return false;
     }
-    spawnPrimedTnt(spawnLocation, fuseTicks);
+    spawnPrimedTnt(spawnLocation, settings.chatTntFuseTicks());
     return true;
   }
 
-  private boolean canSpawnTnt(Location location) {
+  private boolean canSpawnTnt(Location location, BridgeSettings settings) {
     World world = location.getWorld();
     if (world == null) {
       return false;
     }
-    if (!isWorldAllowed(world)) {
+    if (!isWorldAllowed(world, settings)) {
       return false;
     }
     if (!world.isChunkLoaded(location.getBlockX() >> 4, location.getBlockZ() >> 4)) {
@@ -950,14 +1182,15 @@ public class ExamplePlugin extends JavaPlugin {
         });
   }
 
-  private void spawnMilestoneCelebration(Player player, SubscriberMilestone milestone) {
+  private void spawnMilestoneCelebration(
+      BridgeSettings settings, Player player, SubscriberMilestone milestone) {
     MilestoneSettings milestoneSettings = settings.milestoneSettings;
     if (milestoneSettings.tntCount() <= 0) {
       return;
     }
 
     Location baseLocation = player.getLocation();
-    if (!canSpawnTnt(baseLocation)) {
+    if (!canSpawnTnt(baseLocation, settings)) {
       return;
     }
 
@@ -973,7 +1206,7 @@ public class ExamplePlugin extends JavaPlugin {
               baseLocation.getX() + offsetX,
               baseLocation.getY(),
               baseLocation.getZ() + offsetZ);
-      if (canSpawnTnt(location)) {
+      if (canSpawnTnt(location, settings)) {
         spawnLocations.add(location);
       }
     }
@@ -1034,7 +1267,11 @@ public class ExamplePlugin extends JavaPlugin {
     }
 
     Location baseLocation = player.getLocation();
-    if (!isWorldAllowed(baseLocation.getWorld())) {
+    BridgeSettings bridgeSettings = getBridgeSettings(invocation.platform());
+    if (bridgeSettings == null) {
+      return;
+    }
+    if (!isWorldAllowed(baseLocation.getWorld(), bridgeSettings)) {
       return;
     }
 
@@ -1043,15 +1280,15 @@ public class ExamplePlugin extends JavaPlugin {
       return;
     }
 
-    OrbitalStrikeSettings settings = invocation.settings();
-    double cappedRadius = Math.max(0.0D, settings.radius());
+    OrbitalStrikeSettings orbital = invocation.settings();
+    double cappedRadius = Math.max(0.0D, orbital.radius());
     double baseY =
         Math.max(
             world.getMinHeight() + 1,
-            Math.min(world.getMaxHeight() - 1, baseLocation.getY() + settings.verticalOffset()));
+            Math.min(world.getMaxHeight() - 1, baseLocation.getY() + orbital.verticalOffset()));
 
     List<Location> spawnLocations = new ArrayList<>();
-    int desired = Math.max(1, settings.tntCount());
+    int desired = Math.max(1, orbital.tntCount());
     for (int i = 0; i < desired; i++) {
       double angle = desired == 1 ? 0.0D : (Math.PI * 2.0D * i) / desired;
       double distance = cappedRadius <= 0.001D ? 0.0D : cappedRadius;
@@ -1059,7 +1296,7 @@ public class ExamplePlugin extends JavaPlugin {
       double offsetZ = Math.sin(angle) * distance;
       Location candidate =
           new Location(world, baseLocation.getX() + offsetX, baseY, baseLocation.getZ() + offsetZ);
-      if (canSpawnTnt(candidate)) {
+      if (canSpawnTnt(candidate, bridgeSettings)) {
         spawnLocations.add(candidate);
       }
     }
@@ -1075,7 +1312,7 @@ public class ExamplePlugin extends JavaPlugin {
 
     String mainTitle =
         applyTitlePlaceholders(
-            settings.titleMain(),
+            orbital.titleMain(),
             invocation.donor(),
             invocation.amount(),
             invocation.formattedAmount(),
@@ -1084,7 +1321,7 @@ public class ExamplePlugin extends JavaPlugin {
             spawnLocations.size());
     String subTitle =
         applyTitlePlaceholders(
-            settings.titleSubtitle(),
+            orbital.titleSubtitle(),
             invocation.donor(),
             invocation.amount(),
             invocation.formattedAmount(),
@@ -1096,9 +1333,9 @@ public class ExamplePlugin extends JavaPlugin {
       player.sendTitle(
           mainTitle,
           subTitle,
-          settings.titleFadeIn(),
-          settings.titleStay(),
-          settings.titleFadeOut());
+          orbital.titleFadeIn(),
+          orbital.titleStay(),
+          orbital.titleFadeOut());
     }
 
     new BukkitRunnable() {
@@ -1112,9 +1349,9 @@ public class ExamplePlugin extends JavaPlugin {
         }
 
         int spawned = 0;
-        while (index < spawnLocations.size() && spawned < settings.waveSize()) {
+        while (index < spawnLocations.size() && spawned < orbital.waveSize()) {
           Location location = spawnLocations.get(index++);
-          spawnPrimedTnt(location, settings.fuseTicks());
+          spawnPrimedTnt(location, orbital.fuseTicks());
           spawned++;
         }
 
@@ -1122,17 +1359,27 @@ public class ExamplePlugin extends JavaPlugin {
           cancel();
         }
       }
-    }.runTaskTimer(this, 0L, settings.tickInterval());
+    }.runTaskTimer(this, 0L, orbital.tickInterval());
   }
 
   /** Reloads cached configuration values from {@code config.yml}. */
   public void loadSettingsFromConfig() {
     FileConfiguration config = getConfig();
-    settings = BridgeSettings.from(config);
-    listenerSettings = ListenerSettings.from(config);
-    listenerScriptPath = listenerSettings.listenerScript();
-    if (bridge != null) {
-      bridge.setSubscriberMilestoneInterval(settings.subscriberMilestoneInterval());
+    BridgeSettings youtube = BridgeSettings.from(config, "youtube-bridge");
+    BridgeSettings tiktok = BridgeSettings.from(config, "tiktok-bridge");
+    platformSettings.put(StreamPlatform.YOUTUBE, youtube);
+    platformSettings.put(StreamPlatform.TIKTOK, tiktok);
+
+    youtubeListenerSettings = ListenerSettings.from(config, "youtube");
+    tikTokListenerSettings = ListenerSettings.from(config, "tiktok");
+    listenerScriptPaths.put(StreamPlatform.YOUTUBE, youtubeListenerSettings.listenerScript());
+    listenerScriptPaths.put(StreamPlatform.TIKTOK, tikTokListenerSettings.listenerScript());
+
+    if (youtubeBridge != null) {
+      youtubeBridge.setSubscriberMilestoneInterval(youtube.subscriberMilestoneInterval());
+    }
+    if (tikTokBridge != null) {
+      tikTokBridge.setSubscriberMilestoneInterval(tiktok.subscriberMilestoneInterval());
     }
   }
 
@@ -1141,11 +1388,13 @@ public class ExamplePlugin extends JavaPlugin {
     List<String> messages = new ArrayList<>();
     boolean passed = true;
 
-    passed &= checkBridgeSettings(messages);
+    BridgeSettings youtubeSettings = getBridgeSettings(StreamPlatform.YOUTUBE);
+
+    passed &= checkBridgeSettings(messages, youtubeSettings);
     passed &= checkBridgeInitialisation(messages);
     passed &= checkListenerProcess(messages);
     passed &= checkListenerConfiguration(messages);
-    passed &= checkTargetPlayer(messages);
+    passed &= checkTargetPlayer(messages, youtubeSettings);
 
     return new SelfTestResult(passed, List.copyOf(messages));
   }
@@ -1154,19 +1403,20 @@ public class ExamplePlugin extends JavaPlugin {
   public OrbitalStrikeDemoResult runOrbitalStrikeDemo() {
     List<String> messages = new ArrayList<>();
 
-    if (settings == null) {
+    BridgeSettings youtubeSettings = getBridgeSettings(StreamPlatform.YOUTUBE);
+    if (youtubeSettings == null) {
       messages.add(
           ChatColor.RED
               + "Bridge settings are unavailable; reload the configuration first.");
       return new OrbitalStrikeDemoResult(false, messages);
     }
 
-    if (!settings.enabled()) {
+    if (!youtubeSettings.enabled()) {
       messages.add(ChatColor.RED + "Bridge features are disabled in config.yml.");
       return new OrbitalStrikeDemoResult(false, messages);
     }
 
-    DonationSettings donationSettings = settings.donationSettings();
+    DonationSettings donationSettings = youtubeSettings.donationSettings();
     if (donationSettings == null || !donationSettings.enabled()) {
       messages.add(ChatColor.RED + "Donation reactions are disabled in config.yml.");
       return new OrbitalStrikeDemoResult(false, messages);
@@ -1178,7 +1428,7 @@ public class ExamplePlugin extends JavaPlugin {
       return new OrbitalStrikeDemoResult(false, messages);
     }
 
-    Optional<Player> target = resolveConfiguredPlayer();
+    Optional<Player> target = resolveConfiguredPlayer(youtubeSettings);
     if (target.isEmpty()) {
       messages.add(
           ChatColor.RED + "No eligible target player is online for the orbital strike test.");
@@ -1204,6 +1454,7 @@ public class ExamplePlugin extends JavaPlugin {
 
     OrbitalStrikeInvocation invocation =
         new OrbitalStrikeInvocation(
+            StreamPlatform.YOUTUBE,
             player,
             "Debug Supporter",
             "This is only a test of the orbital strike cannon.",
@@ -1217,7 +1468,7 @@ public class ExamplePlugin extends JavaPlugin {
     return new OrbitalStrikeDemoResult(true, messages);
   }
 
-  private boolean checkBridgeSettings(List<String> messages) {
+  private boolean checkBridgeSettings(List<String> messages, BridgeSettings settings) {
     if (settings == null) {
       messages.add(ChatColor.RED + "Bridge settings could not be loaded from config.yml.");
       return false;
@@ -1232,7 +1483,7 @@ public class ExamplePlugin extends JavaPlugin {
   }
 
   private boolean checkBridgeInitialisation(List<String> messages) {
-    if (bridge == null) {
+    if (youtubeBridge == null) {
       messages.add(ChatColor.RED + "YouTube chat bridge has not been initialised.");
       return false;
     }
@@ -1242,12 +1493,14 @@ public class ExamplePlugin extends JavaPlugin {
   }
 
   private boolean checkListenerProcess(List<String> messages) {
-    if (listenerProcess == null) {
+    com.crimsonwarpedcraft.exampleplugin.service.YouTubeChatBridge process =
+        listenerProcesses.get(StreamPlatform.YOUTUBE);
+    if (process == null) {
       messages.add(ChatColor.RED + "Listener process is not available. Monitoring cannot start.");
       return false;
     }
 
-    if (listenerProcess.isRunning()) {
+    if (process.isRunning()) {
       messages.add(ChatColor.GREEN + "Listener process handler is ready and running.");
       return true;
     }
@@ -1260,15 +1513,15 @@ public class ExamplePlugin extends JavaPlugin {
   }
 
   private boolean checkListenerConfiguration(List<String> messages) {
-    if (listenerSettings == null) {
+    if (youtubeListenerSettings == null) {
       messages.add(ChatColor.RED + "Listener settings are missing from config.yml.");
       return false;
     }
 
     boolean passed = true;
-    String listenerUrl = listenerSettings.listenerUrl();
+    String listenerUrl = youtubeListenerSettings.listenerUrl();
     boolean usingExternal = listenerUrl != null && !listenerUrl.isBlank();
-    String streamIdentifier = listenerSettings.streamIdentifier();
+    String streamIdentifier = youtubeListenerSettings.streamIdentifier();
 
     if (usingExternal) {
       messages.add(
@@ -1296,7 +1549,7 @@ public class ExamplePlugin extends JavaPlugin {
               + ".");
     }
 
-    File scriptFile = getListenerScriptFile();
+    File scriptFile = getListenerScriptFile(StreamPlatform.YOUTUBE);
     if (scriptFile.exists()) {
       if (scriptFile.canExecute()) {
         messages.add(
@@ -1329,8 +1582,8 @@ public class ExamplePlugin extends JavaPlugin {
     return passed;
   }
 
-  private boolean checkTargetPlayer(List<String> messages) {
-    String targetIgn = listenerSettings != null ? listenerSettings.targetIgn() : "";
+  private boolean checkTargetPlayer(List<String> messages, BridgeSettings settings) {
+    String targetIgn = youtubeListenerSettings != null ? youtubeListenerSettings.targetIgn() : "";
     String fallbackTarget = settings != null ? settings.targetPlayer() : "";
     String effectiveTarget =
         (targetIgn != null && !targetIgn.isBlank()) ? targetIgn : fallbackTarget;
@@ -1407,6 +1660,7 @@ public class ExamplePlugin extends JavaPlugin {
   }
 
   private record OrbitalStrikeInvocation(
+      StreamPlatform platform,
       Player player,
       String donor,
       String donorMessage,
@@ -1417,34 +1671,34 @@ public class ExamplePlugin extends JavaPlugin {
 
   private void loadSubscriberState() {
     FileConfiguration config = getConfig();
-    ConfigurationSection state = config.getConfigurationSection("youtube-bridge-state");
-    if (state == null) {
-      knownSubscriberCount = 0L;
-      lastCelebratedMilestone = 0L;
-      return;
-    }
-    knownSubscriberCount = state.getLong("known-subscriber-count", 0L);
-    lastCelebratedMilestone = state.getLong("last-celebrated-milestone", 0L);
+    loadSubscriberState(config, StreamPlatform.YOUTUBE, "youtube-bridge-state");
+    loadSubscriberState(config, StreamPlatform.TIKTOK, "tiktok-bridge-state");
   }
 
-  private void persistSubscriberState() {
+  private void loadSubscriberState(
+      FileConfiguration config, StreamPlatform platform, String sectionKey) {
+    ConfigurationSection state = config.getConfigurationSection(sectionKey);
+    long known = 0L;
+    long milestone = 0L;
+    if (state != null) {
+      known = state.getLong("known-subscriber-count", 0L);
+      milestone = state.getLong("last-celebrated-milestone", 0L);
+    }
+    knownSubscriberCounts.put(platform, known);
+    lastCelebratedMilestones.put(platform, milestone);
+  }
+
+  private void persistSubscriberState(StreamPlatform platform) {
     FileConfiguration config = getConfig();
-    ConfigurationSection state = config.getConfigurationSection("youtube-bridge-state");
+    String sectionKey =
+        platform == StreamPlatform.TIKTOK ? "tiktok-bridge-state" : "youtube-bridge-state";
+    ConfigurationSection state = config.getConfigurationSection(sectionKey);
     if (state == null) {
-      state = config.createSection("youtube-bridge-state");
+      state = config.createSection(sectionKey);
     }
-    state.set("known-subscriber-count", knownSubscriberCount);
-    state.set("last-celebrated-milestone", lastCelebratedMilestone);
+    state.set("known-subscriber-count", getKnownSubscriberCount(platform));
+    state.set("last-celebrated-milestone", getLastCelebratedMilestone(platform));
     saveConfig();
-  }
-
-  private boolean updateKnownSubscriberCount(long totalSubscribers) {
-    long updated = Math.max(knownSubscriberCount, totalSubscribers);
-    if (updated != knownSubscriberCount) {
-      knownSubscriberCount = updated;
-      return true;
-    }
-    return false;
   }
 
   private record ListenerSettings(
@@ -1456,10 +1710,10 @@ public class ExamplePlugin extends JavaPlugin {
       String listenerUrl,
       String streamlabsSocketToken) {
 
-    static ListenerSettings from(FileConfiguration config) {
-      ConfigurationSection root = config.getConfigurationSection("youtube");
+    static ListenerSettings from(FileConfiguration config, String sectionKey) {
+      ConfigurationSection root = config.getConfigurationSection(sectionKey);
       if (root == null) {
-        root = config.createSection("youtube");
+        root = config.createSection(sectionKey);
       }
 
       String streamIdentifier =
@@ -1524,10 +1778,10 @@ public class ExamplePlugin extends JavaPlugin {
       MilestoneSettings milestoneSettings,
       DonationSettings donationSettings) {
 
-    static BridgeSettings from(FileConfiguration config) {
-      ConfigurationSection root = config.getConfigurationSection("youtube-bridge");
+    static BridgeSettings from(FileConfiguration config, String sectionKey) {
+      ConfigurationSection root = config.getConfigurationSection(sectionKey);
       if (root == null) {
-        root = config.createSection("youtube-bridge");
+        root = config.createSection(sectionKey);
       }
 
       final boolean enabled = root.getBoolean("enabled", true);
@@ -1713,6 +1967,7 @@ public class ExamplePlugin extends JavaPlugin {
    * external Python process.
    */
   public void simulateChatMessage(String author, String message) {
+    PlatformChatBridge bridge = youtubeBridge;
     if (bridge == null) {
       return;
     }
@@ -1725,6 +1980,7 @@ public class ExamplePlugin extends JavaPlugin {
    * external Python process.
    */
   public void simulateSubscriber(String author, String ign, long totalSubscribers) {
+    PlatformChatBridge bridge = youtubeBridge;
     if (bridge == null) {
       return;
     }

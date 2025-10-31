@@ -1,6 +1,6 @@
 package com.crimsonwarpedcraft.exampleplugin.bridge.event;
 
-import com.crimsonwarpedcraft.exampleplugin.bridge.YouTubeChatBridge;
+import com.crimsonwarpedcraft.exampleplugin.bridge.PlatformChatBridge;
 import org.bukkit.event.Event;
 import org.bukkit.event.HandlerList;
 import org.jetbrains.annotations.NotNull;
@@ -12,17 +12,17 @@ public class YouTubeSubscriberMilestoneEvent extends Event {
 
   private static final HandlerList HANDLERS = new HandlerList();
 
-  private final YouTubeChatBridge.SubscriberMilestone milestone;
+  private final PlatformChatBridge.SubscriberMilestone milestone;
 
   /** Creates a new milestone event with the supplied payload. */
   public YouTubeSubscriberMilestoneEvent(
-      @NotNull YouTubeChatBridge.SubscriberMilestone milestone) {
+      @NotNull PlatformChatBridge.SubscriberMilestone milestone) {
     super(!org.bukkit.Bukkit.isPrimaryThread());
     this.milestone = milestone;
   }
 
   @NotNull
-  public YouTubeChatBridge.SubscriberMilestone getMilestone() {
+  public PlatformChatBridge.SubscriberMilestone getMilestone() {
     return milestone;
   }
 

@@ -18,6 +18,16 @@ youtube:
   # Optional Streamlabs Socket API token used to receive subscriber notifications.
   streamlabs-socket-token: ""
 
+# Configuration for the TikTok stream integration
+tiktok:
+  stream-identifier: ""
+  target-player-ign: ""
+  polling-interval-seconds: 5
+  python-executable: "python3"
+  listener-script: "python/chat_listener.py"
+  listener-url: ""
+  streamlabs-socket-token: ""
+
 world-reset:
   interval-hours: 5
   holding:
@@ -79,6 +89,52 @@ youtube-bridge:
       tick-interval: 2
       title:
         main: "&c{donor} armed the Orbital Strike Cannon!"
+        subtitle: "&eBrace for {tnt_count} TNT!"
+        fade-in: 10
+        stay: 40
+        fade-out: 20
+
+tiktok-bridge:
+  enabled: true
+  target-player: ""
+  allowed-worlds: []
+  chat:
+    enabled: true
+    tnt:
+      enabled: true
+      command: "!tnt"
+      fuse-ticks: 60
+      vertical-offset: 0.0
+  subscribers:
+    kill-enabled: true
+    milestone:
+      enabled: true
+      interval: 100
+      tnt-count: 100
+      radius: 6.0
+      fuse-ticks: 80
+      per-tick: 10
+      tick-interval: 2
+      title:
+        main: "&b{total_subscribers} Followers!"
+        subtitle: "&eMilestone interval reached!"
+        fade-in: 10
+        stay: 60
+        fade-out: 20
+  donations:
+    enabled: true
+    orbital-strike:
+      enabled: true
+      min-amount: 5.0
+      currency: "USD"
+      tnt-count: 100
+      vertical-offset: 25.0
+      radius: 6.0
+      fuse-ticks: 60
+      wave-size: 20
+      tick-interval: 2
+      title:
+        main: "&d{donor} launched a TikTok Orbital Strike!"
         subtitle: "&eBrace for {tnt_count} TNT!"
         fade-in: 10
         stay: 40

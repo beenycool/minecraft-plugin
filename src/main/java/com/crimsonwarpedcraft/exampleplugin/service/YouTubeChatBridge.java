@@ -15,6 +15,7 @@ import java.time.Duration;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Locale;
+import java.util.Objects;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
@@ -27,7 +28,22 @@ import org.bukkit.scheduler.BukkitTask;
  */
 public class YouTubeChatBridge {
 
+  /** Callback that delivers listener output lines to the owning plugin. */
+  @FunctionalInterface
+  public interface ListenerMessageHandler {
+    /**
+     * Handles a single line emitted by the listener process.
+     *
+     * @param message the raw message emitted by the listener
+     * @param targetIgn the configured target player, if any
+     */
+    void handle(String message, String targetIgn);
+  }
+
   private final ExamplePlugin plugin;
+  private final String platformDisplayName;
+  private final ListenerMessageHandler messageHandler;
+  private final String threadName;
   private Process process;
   private ExecutorService outputReader;
   private volatile HttpClient httpClient;
@@ -39,10 +55,15 @@ public class YouTubeChatBridge {
    * Creates a new chat bridge instance.
    *
    * @param plugin the owning plugin
+   * @param platformDisplayName human-readable name for logging
+   * @param messageHandler callback that delivers messages to the plugin
    */
-  @SuppressFBWarnings("EI_EXPOSE_REP2")
-  public YouTubeChatBridge(ExamplePlugin plugin) {
-    this.plugin = plugin;
+  public YouTubeChatBridge(
+      ExamplePlugin plugin, String platformDisplayName, ListenerMessageHandler messageHandler) {
+    this.plugin = Objects.requireNonNull(plugin, "plugin");
+    this.platformDisplayName = Objects.requireNonNull(platformDisplayName, "platformDisplayName");
+    this.messageHandler = Objects.requireNonNull(messageHandler, "messageHandler");
+    this.threadName = platformDisplayName.replaceAll("\\s+", "") + "ChatBridge-Output";
   }
 
   /**
@@ -76,17 +97,21 @@ public class YouTubeChatBridge {
     }
 
     if (streamIdentifier == null || streamIdentifier.isEmpty()) {
-      plugin.getLogger().info("YouTube chat bridge not started: stream identifier not configured.");
+      String message =
+          platformDisplayName + " chat bridge not started: stream identifier not configured.";
+      plugin.getLogger().info(message);
       return;
     }
 
     if (listenerScript == null || !listenerScript.exists()) {
+      String scriptPath =
+          listenerScript == null ? "<unspecified>" : listenerScript.getAbsolutePath();
       plugin
           .getLogger()
           .log(
               Level.WARNING,
-              "YouTube listener script not found at {0}. Unable to start chat bridge.",
-              listenerScript == null ? "<unspecified>" : listenerScript.getAbsolutePath());
+              "{0} listener script not found at {1}. Unable to start chat bridge.",
+              new Object[] {platformDisplayName, scriptPath});
       return;
     }
 
@@ -106,19 +131,20 @@ public class YouTubeChatBridge {
 
     try {
       process = processBuilder.start();
-      plugin.getLogger().info("Started YouTube chat listener process.");
+      plugin.getLogger().info("Started " + platformDisplayName + " chat listener process.");
       startOutputReader(process, targetIgn);
     } catch (IOException e) {
+      String failureMessage = "Failed to start " + platformDisplayName + " chat listener process";
       plugin
           .getLogger()
-          .log(Level.SEVERE, "Failed to start YouTube chat listener process", e);
+          .log(Level.SEVERE, failureMessage, e);
       stop();
     }
   }
 
   private void startOutputReader(Process process, String targetIgn) {
     outputReader =
-        Executors.newSingleThreadExecutor(r -> new Thread(r, "YouTubeChatBridge-Output"));
+        Executors.newSingleThreadExecutor(r -> new Thread(r, threadName));
     outputReader.submit(
         () -> {
           try (BufferedReader reader =
@@ -131,12 +157,15 @@ public class YouTubeChatBridge {
                   .getScheduler()
                   .runTask(
                       plugin,
-                      () -> plugin.handleIncomingYouTubeMessage(message, targetIgn));
+                      () -> messageHandler.handle(message, targetIgn));
             }
           } catch (IOException e) {
             plugin
                 .getLogger()
-                .log(Level.WARNING, "Error while reading YouTube chat bridge output", e);
+                .log(
+                    Level.WARNING,
+                    "Error while reading " + platformDisplayName + " chat bridge output",
+                    e);
           }
         });
   }
@@ -163,7 +192,9 @@ public class YouTubeChatBridge {
       process.destroy();
       try {
         if (!process.waitFor(5, TimeUnit.SECONDS)) {
-          plugin.getLogger().warning("YouTube chat listener did not exit; forcing termination.");
+          String terminationWarning =
+              platformDisplayName + " chat listener did not exit; forcing termination.";
+          plugin.getLogger().warning(terminationWarning);
           process.destroyForcibly();
           process.waitFor(2, TimeUnit.SECONDS);
         }
@@ -171,7 +202,7 @@ public class YouTubeChatBridge {
         Thread.currentThread().interrupt();
       }
       process = null;
-      plugin.getLogger().info("Stopped YouTube chat listener process.");
+      plugin.getLogger().info("Stopped " + platformDisplayName + " chat listener process.");
     }
   }
 
@@ -190,7 +221,10 @@ public class YouTubeChatBridge {
     } catch (IllegalArgumentException ex) {
       plugin
           .getLogger()
-          .log(Level.WARNING, "Invalid listener URL provided; unable to start polling.", ex);
+          .log(
+              Level.WARNING,
+              "Invalid listener URL provided; unable to start polling.",
+              ex);
       return;
     }
 
@@ -225,7 +259,9 @@ public class YouTubeChatBridge {
       plugin
           .getLogger()
           .info(
-              "Polling external YouTube listener at "
+              "Polling external "
+                  + platformDisplayName
+                  + " listener at "
                   + listenerUrl
                   + " every "
                   + intervalLabel
@@ -282,7 +318,7 @@ public class YouTubeChatBridge {
                 .getScheduler()
                 .runTask(
                     plugin,
-                    () -> plugin.handleIncomingYouTubeMessage(message, targetIgn));
+                    () -> messageHandler.handle(message, targetIgn));
           } catch (IllegalStateException schedulerShutdown) {
             plugin
                 .getLogger()
@@ -310,7 +346,10 @@ public class YouTubeChatBridge {
       if (consecutivePollFailures <= 3 || consecutivePollFailures % 10 == 0) {
         plugin
             .getLogger()
-            .log(Level.WARNING, "I/O error polling listener endpoint", ex);
+            .log(
+                Level.WARNING,
+                "I/O error polling listener endpoint",
+                ex);
       }
     } catch (InterruptedException ex) {
       Thread.currentThread().interrupt();

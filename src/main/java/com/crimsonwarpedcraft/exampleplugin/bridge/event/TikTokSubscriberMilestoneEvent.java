@@ -5,24 +5,22 @@ import org.bukkit.event.Event;
 import org.bukkit.event.HandlerList;
 import org.jetbrains.annotations.NotNull;
 
-/**
- * Bukkit event fired when the YouTube bridge delivers a chat message.
- */
-public class YouTubeChatMessageEvent extends Event {
+/** Bukkit event fired when the TikTok bridge emits a subscriber milestone notification. */
+public class TikTokSubscriberMilestoneEvent extends Event {
 
   private static final HandlerList HANDLERS = new HandlerList();
 
-  private final PlatformChatBridge.ChatMessage message;
+  private final PlatformChatBridge.SubscriberMilestone milestone;
 
-  /** Creates a new chat message event with the supplied payload. */
-  public YouTubeChatMessageEvent(@NotNull PlatformChatBridge.ChatMessage message) {
+  /** Creates a new TikTok subscriber milestone event. */
+  public TikTokSubscriberMilestoneEvent(@NotNull PlatformChatBridge.SubscriberMilestone milestone) {
     super(!org.bukkit.Bukkit.isPrimaryThread());
-    this.message = message;
+    this.milestone = milestone;
   }
 
   @NotNull
-  public PlatformChatBridge.ChatMessage getMessage() {
-    return message;
+  public PlatformChatBridge.SubscriberMilestone getMilestone() {
+    return milestone;
   }
 
   @Override
@@ -30,7 +28,6 @@ public class YouTubeChatMessageEvent extends Event {
     return HANDLERS;
   }
 
-  /** Bukkit boilerplate for event handlers. */
   public static HandlerList getHandlerList() {
     return HANDLERS;
   }
