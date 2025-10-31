@@ -48,8 +48,6 @@ public class TikTokIntegrationCommand implements CommandExecutor, TabCompleter {
         plugin.loadSettingsFromConfig();
         plugin.restartMonitoring();
         sender.sendMessage(ChatColor.GREEN + "Reloaded TikTok stream configuration.");
-        sender.sendMessage(
-            ChatColor.YELLOW + "(YouTube listener restarted if applicable.)");
         return true;
       default:
         sendUsage(sender, label);
@@ -59,7 +57,7 @@ public class TikTokIntegrationCommand implements CommandExecutor, TabCompleter {
 
   private boolean handleSetChat(CommandSender sender, String[] args) {
     if (args.length < 2) {
-      sender.sendMessage(ChatColor.RED + "Usage: /ttstream setchat <listenerUrl>");
+      sender.sendMessage(ChatColor.RED + "Usage: /ttstream setchat <identifier>");
       return true;
     }
 
