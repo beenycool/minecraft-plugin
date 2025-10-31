@@ -7,6 +7,7 @@ import com.crimsonwarpedcraft.exampleplugin.bridge.PlatformChatBridge.Subscriber
 import com.crimsonwarpedcraft.exampleplugin.bridge.PlatformChatBridge.SubscriberNotification;
 import com.crimsonwarpedcraft.exampleplugin.bridge.TikTokChatBridge;
 import com.crimsonwarpedcraft.exampleplugin.bridge.YouTubeChatBridge;
+import com.crimsonwarpedcraft.exampleplugin.command.NightPunishCommand;
 import com.crimsonwarpedcraft.exampleplugin.command.TikTokIntegrationCommand;
 import com.crimsonwarpedcraft.exampleplugin.command.YouTubeIntegrationCommand;
 import com.crimsonwarpedcraft.exampleplugin.service.WorldResetScheduler; // Added from codex branch
@@ -126,6 +127,7 @@ public class ExamplePlugin extends JavaPlugin {
   private ListenerSettings tikTokListenerSettings;
   private final EnumMap<StreamPlatform, String> listenerScriptPaths =
       new EnumMap<>(StreamPlatform.class);
+  private NightPunishCommand nightPunishCommand;
 
   @Override
   public void onEnable() {
@@ -172,6 +174,11 @@ public class ExamplePlugin extends JavaPlugin {
     // Logic from codex branch
     if (worldResetScheduler != null) {
       worldResetScheduler.cancel();
+    }
+
+    if (nightPunishCommand != null) {
+      nightPunishCommand.shutdown();
+      nightPunishCommand = null;
     }
 
     if (!listenerProcesses.isEmpty()) {
@@ -232,6 +239,17 @@ public class ExamplePlugin extends JavaPlugin {
       TikTokIntegrationCommand tikTokExecutor = new TikTokIntegrationCommand(this);
       tiktokCommand.setExecutor(tikTokExecutor);
       tiktokCommand.setTabCompleter(tikTokExecutor);
+    }
+
+    PluginCommand nightCommand = getCommand("nightpunish");
+    if (nightCommand == null) {
+      getLogger()
+          .warning(
+              "Failed to register /nightpunish command; command not defined in plugin.yml");
+    } else {
+      nightPunishCommand = new NightPunishCommand(this);
+      nightCommand.setExecutor(nightPunishCommand);
+      nightCommand.setTabCompleter(nightPunishCommand);
     }
   }
 
