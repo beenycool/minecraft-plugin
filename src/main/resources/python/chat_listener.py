@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
-"""Simple YouTube chat listener used by the ExamplePlugin.
+"""Simple multi-platform chat listener used by the ExamplePlugin.
 
-The script prefers the third-party ``pytchat`` library when available, but will
-fall back to emitting placeholder messages so the Java plugin can demonstrate
-its integration without additional dependencies.
+The script prefers the third-party ``pytchat`` library for YouTube streams and
+``TikTokLive`` for TikTok broadcasts when available, but will fall back to
+emitting placeholder messages so the Java plugin can demonstrate its
+integration without additional dependencies.
 """
 
 from __future__ import annotations
@@ -33,8 +34,17 @@ class YouTubeStreamUnavailableError(RuntimeError):
 
 
 def _parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Relay YouTube chat messages")
-    parser.add_argument("--stream", required=True, help="YouTube chat ID or URL")
+    parser = argparse.ArgumentParser(description="Relay livestream chat messages")
+    parser.add_argument(
+        "--platform",
+        choices={"youtube", "tiktok"},
+        default="youtube",
+        help="Streaming platform to listen to (default: youtube)",
+    )
+    parser.add_argument(
+        "--stream",
+        help="YouTube chat ID or URL (required when --platform=youtube)",
+    )
     parser.add_argument(
         "--interval",
         type=int,
@@ -44,7 +54,10 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--streamlabs-token",
         dest="streamlabs_token",
-        help="(Discouraged) Streamlabs token; prefer STREAMLABS_SOCKET_TOKEN env var",
+        help=(
+            "(Discouraged) Streamlabs token; prefer STREAMLABS_SOCKET_TOKEN env var. "
+            "Only used when --platform=youtube"
+        ),
     )
     parser.add_argument(
         "--http-endpoint",
@@ -60,7 +73,38 @@ def _parse_args() -> argparse.Namespace:
         default="/",
         help="Optional path prefix to serve polling requests from (defaults to /)",
     )
-    return parser.parse_args()
+    parser.add_argument(
+        "--tiktok-username",
+        dest="tiktok_username",
+        help="TikTok username/unique ID to connect to when --platform=tiktok",
+    )
+    parser.add_argument(
+        "--tiktok-room-id",
+        dest="tiktok_room_id",
+        help="TikTok room ID to join when --platform=tiktok",
+    )
+    parser.add_argument(
+        "--tiktok-session-id",
+        dest="tiktok_session_id",
+        help="Optional TikTok sessionid cookie for authenticated access",
+    )
+    parser.add_argument(
+        "--tiktok-ms-token",
+        dest="tiktok_ms_token",
+        help="Optional TikTok msToken cookie for authenticated access",
+    )
+
+    args = parser.parse_args()
+
+    if args.platform == "youtube":
+        if not args.stream:
+            parser.error("--stream is required when --platform=youtube")
+    elif not (args.tiktok_username or args.tiktok_room_id):
+        parser.error(
+            "--tiktok-username or --tiktok-room-id is required when --platform=tiktok"
+        )
+
+    return args
 
 
 def _emit(message: str) -> None:
@@ -132,7 +176,7 @@ def _start_http_server(
         allowed_paths.add("/events")
 
     class _PollingHandler(http.server.BaseHTTPRequestHandler):
-        server_version = "YouTubeChatListener/1.0"
+        server_version = "ChatRelay/1.0"
 
         def do_GET(self) -> None:  # pragma: no cover - network integration
             path = urlparse(self.path).path
@@ -196,7 +240,7 @@ def _start_http_server(
         with server:
             server.serve_forever(poll_interval=0.5)
 
-    thread = threading.Thread(target=_serve, name="YouTubeChatListenerHTTP", daemon=True)
+    thread = threading.Thread(target=_serve, name="ChatRelayHTTP", daemon=True)
     thread.start()
 
     def _shutdown_on_stop() -> None:  # pragma: no cover - integration cleanup
@@ -210,7 +254,9 @@ def _start_http_server(
             server.server_close()
             HTTP_PUBLISH_ENABLED = False
 
-    threading.Thread(target=_shutdown_on_stop, name="YouTubeChatListenerHTTP-Shutdown", daemon=True).start()
+    threading.Thread(
+        target=_shutdown_on_stop, name="ChatRelayHTTP-Shutdown", daemon=True
+    ).start()
 
     HTTP_PUBLISH_ENABLED = True
     base_url = f"http://{host}:{port}{normalized_prefix}"
@@ -256,6 +302,8 @@ def _emit_chat(
     message: str,
     channel_id: Optional[str] = None,
     message_id: Optional[int] = None,
+    *,
+    platform: Optional[str] = None,
 ) -> None:
     payload: Dict[str, Any] = {
         "type": "chat",
@@ -267,6 +315,8 @@ def _emit_chat(
         payload["channelId"] = channel_id
     if message_id is not None:
         payload["messageId"] = message_id
+    if platform:
+        payload["platform"] = platform
     _emit_json(payload)
 
 
@@ -299,6 +349,8 @@ def _emit_subscriber(
     total_subscribers: Optional[int],
     channel_id: Optional[str],
     raw: Optional[Dict[str, Any]] = None,
+    *,
+    platform: Optional[str] = None,
 ) -> None:
     payload: Dict[str, Any] = {
         "type": "subscriber",
@@ -311,6 +363,38 @@ def _emit_subscriber(
         payload["channelId"] = channel_id
     if raw:
         payload["raw"] = raw
+    if platform:
+        payload["platform"] = platform
+    _emit_json(payload)
+
+
+def _emit_donation(
+    author: str,
+    amount: Optional[float],
+    currency: Optional[str],
+    message: Optional[str],
+    formatted_amount: Optional[str] = None,
+    raw: Optional[Dict[str, Any]] = None,
+    *,
+    platform: Optional[str] = None,
+) -> None:
+    payload: Dict[str, Any] = {
+        "type": "donation",
+        "author": author,
+        "timestamp": _timestamp(),
+    }
+    if amount is not None:
+        payload["amount"] = amount
+    if currency:
+        payload["currency"] = currency
+    if formatted_amount:
+        payload["formattedAmount"] = formatted_amount
+    if message:
+        payload["message"] = message
+    if raw:
+        payload["raw"] = raw
+    if platform:
+        payload["platform"] = platform
     _emit_json(payload)
 
 
@@ -329,7 +413,11 @@ def _run_with_pytchat(stream_identifier: str, stop_event: threading.Event) -> No
                 channel_id = getattr(item.author, "channelId", None)
                 message_id = _safe_int(getattr(item, "timestamp", None))
                 _emit_chat(
-                    author, item.message, channel_id=channel_id, message_id=message_id
+                    author,
+                    item.message,
+                    channel_id=channel_id,
+                    message_id=message_id,
+                    platform="youtube",
                 )
             time.sleep(1)
     except KeyboardInterrupt:
@@ -338,11 +426,187 @@ def _run_with_pytchat(stream_identifier: str, stop_event: threading.Event) -> No
         raise YouTubeStreamUnavailableError(str(exc)) from exc
 
 
-def _run_placeholder(stream_identifier: str, interval: int, stop_event: threading.Event) -> None:
-    _emit_chat("YouTube", f"Simulated relay for {stream_identifier}")
+def _run_placeholder(
+    stream_identifier: str,
+    interval: int,
+    stop_event: threading.Event,
+    *,
+    platform: str,
+    author: str,
+) -> None:
+    _emit_chat(author, f"Simulated relay for {stream_identifier}", platform=platform)
     while not stop_event.is_set():
         time.sleep(interval)
-        _emit_log("Heartbeat", stream="placeholder", streamIdentifier=stream_identifier)
+        _emit_log(
+            "Heartbeat",
+            stream="placeholder",
+            streamIdentifier=stream_identifier,
+            platform=platform,
+        )
+
+
+def _run_tiktok_listener(
+    username: Optional[str],
+    room_id: Optional[str],
+    session_id: Optional[str],
+    ms_token: Optional[str],
+    interval: int,
+    stop_event: threading.Event,
+) -> int:
+    try:
+        from TikTokLive import TikTokLiveClient  # type: ignore
+        from TikTokLive.types.events import (  # type: ignore
+            CommentEvent,
+            FollowEvent,
+            GiftEvent,
+            LiveEndEvent,
+            SubscribeEvent,
+        )
+    except ModuleNotFoundError as exc:
+        _emit_log(
+            "TikTokLive is not installed; using placeholder output",
+            level="warning",
+            platform="tiktok",
+            error=str(exc),
+        )
+        identifier = username or room_id or "tiktok"
+        _run_placeholder(
+            identifier,
+            interval,
+            stop_event,
+            platform="tiktok",
+            author="TikTok",
+        )
+        return 0
+    except Exception as exc:  # pragma: no cover - defensive guard
+        _emit_error("Failed to initialise TikTok listener", error=str(exc), platform="tiktok")
+        return 1
+
+    client_kwargs: Dict[str, Any] = {}
+    if room_id:
+        client_kwargs["room_id"] = room_id
+    if session_id:
+        client_kwargs["session_id"] = session_id
+    if ms_token:
+        client_kwargs["ms_token"] = ms_token
+    if username:
+        client_kwargs["unique_id"] = username
+
+    try:
+        client = TikTokLiveClient(**client_kwargs)
+    except Exception as exc:  # pragma: no cover - defensive guard
+        _emit_error("Failed to create TikTok client", error=str(exc), platform="tiktok")
+        return 1
+
+    def _user_display(user: Any) -> Tuple[str, Optional[str]]:
+        if user is None:
+            return "TikTok", None
+        nickname = getattr(user, "nickname", None)
+        unique_id = getattr(user, "uniqueId", None)
+        display = str(nickname or unique_id or "TikTok")
+        identifier = getattr(user, "userId", None) or getattr(user, "id", None)
+        if identifier is not None:
+            identifier = str(identifier)
+        return display, identifier
+
+    @client.on("comment")  # type: ignore[misc]
+    async def _on_comment(event: CommentEvent) -> None:
+        user = getattr(event, "user", None) or getattr(event, "author", None)
+        author, channel_id = _user_display(user)
+        message = getattr(event, "comment", None) or getattr(event, "message", None) or ""
+        _emit_chat(author, str(message), channel_id=channel_id, platform="tiktok")
+
+    @client.on("follow")  # type: ignore[misc]
+    async def _on_follow(event: FollowEvent) -> None:
+        user = getattr(event, "user", None) or getattr(event, "follower", None)
+        author, channel_id = _user_display(user)
+        follow_info = getattr(event, "followInfo", None)
+        total_followers = _safe_int(getattr(follow_info, "followerCount", None))
+        _emit_subscriber(
+            author,
+            total_followers,
+            channel_id,
+            raw={"event": "follow", "data": _serialize_event(event)},
+            platform="tiktok",
+        )
+
+    @client.on("subscribe")  # type: ignore[misc]
+    async def _on_subscribe(event: SubscribeEvent) -> None:
+        user = getattr(event, "user", None) or getattr(event, "subscriber", None)
+        author, channel_id = _user_display(user)
+        total_subscribers = _safe_int(
+            getattr(event, "subLevel", None)
+            or getattr(event, "subscriberCount", None)
+            or getattr(getattr(event, "subscribeInfo", None), "subscriberCount", None)
+        )
+        _emit_subscriber(
+            author,
+            total_subscribers,
+            channel_id,
+            raw={"event": "subscribe", "data": _serialize_event(event)},
+            platform="tiktok",
+        )
+
+    @client.on("gift")  # type: ignore[misc]
+    async def _on_gift(event: GiftEvent) -> None:
+        user = getattr(event, "user", None)
+        author, channel_id = _user_display(user)
+        gift = getattr(event, "gift", None)
+        gift_name = getattr(gift, "name", None) or getattr(gift, "id", None)
+        repeat_count = _safe_int(
+            getattr(event, "repeat_count", None) or getattr(event, "repeatCount", None)
+        )
+        diamond_value = _safe_int(
+            getattr(gift, "diamond_count", None) or getattr(gift, "diamondCount", None)
+        )
+        total_diamonds: Optional[float] = None
+        if diamond_value is not None:
+            multiplier = repeat_count if repeat_count and repeat_count > 0 else 1
+            total_diamonds = float(diamond_value * multiplier)
+        formatted_amount = None
+        if total_diamonds is not None:
+            formatted_amount = f"{int(total_diamonds)} diamonds"
+        _emit_donation(
+            author,
+            total_diamonds,
+            "diamonds" if total_diamonds is not None else None,
+            str(gift_name) if gift_name else None,
+            formatted_amount,
+            raw={"event": "gift", "data": _serialize_event(event)},
+            platform="tiktok",
+        )
+
+    @client.on("live_end")  # type: ignore[misc]
+    async def _on_live_end(event: LiveEndEvent) -> None:
+        _emit_log("TikTok live ended", level="info", platform="tiktok")
+        stop_event.set()
+        try:
+            client.stop()
+        except Exception:
+            pass
+
+    @client.on("connect")  # type: ignore[misc]
+    async def _on_connect(_: Any) -> None:
+        _emit_log("Connected to TikTok live chat", level="info", platform="tiktok")
+
+    def _stop_on_event() -> None:
+        stop_event.wait()
+        try:
+            client.stop()
+        except Exception:
+            pass
+
+    threading.Thread(target=_stop_on_event, name="TikTokLive-Stopper", daemon=True).start()
+
+    try:
+        client.run()
+    except KeyboardInterrupt:
+        raise
+    except Exception as exc:  # pragma: no cover - defensive guard
+        _emit_error("TikTok listener encountered an error", error=str(exc), platform="tiktok")
+        return 1
+
+    return 0
 
 
 def _safe_int(value: Any) -> Optional[int]:
@@ -358,12 +622,52 @@ def _safe_int(value: Any) -> Optional[int]:
         return None
 
 
+def _safe_float(value: Any) -> Optional[float]:
+    if value is None:
+        return None
+    try:
+        if isinstance(value, str) and value.strip() == "":
+            return None
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
 def _maybe_iterable(value: Any) -> Iterable[Any]:
     if isinstance(value, list):
         return value
     if value is None:
         return []
     return [value]
+
+
+def _serialize_event(value: Any) -> Any:
+    if isinstance(value, (str, int, float, bool)) or value is None:
+        return value
+    if isinstance(value, dict):
+        return {k: _serialize_event(v) for k, v in value.items()}
+    if isinstance(value, (list, tuple, set)):
+        return [_serialize_event(v) for v in value]
+    if hasattr(value, "to_dict") and callable(getattr(value, "to_dict")):
+        try:
+            return _serialize_event(value.to_dict())
+        except Exception:
+            pass
+    if hasattr(value, "dict") and callable(getattr(value, "dict")):
+        try:
+            return _serialize_event(value.dict())
+        except Exception:
+            pass
+    if hasattr(value, "__dict__"):
+        try:
+            return {
+                key: _serialize_event(val)
+                for key, val in value.__dict__.items()
+                if not key.startswith("_")
+            }
+        except Exception:
+            pass
+    return str(value)
 
 
 def _handle_streamlabs_event(payload: Dict[str, Any]) -> None:
@@ -378,18 +682,50 @@ def _handle_streamlabs_event(payload: Dict[str, Any]) -> None:
         if platform and "youtube" not in platform:
             continue
 
-        if event_type not in {"subscription", "resubscription", "mass_subscription"}:
+        if event_type in {"subscription", "resubscription", "mass_subscription"}:
+            author = (
+                entry.get("name")
+                or entry.get("display_name")
+                or entry.get("from")
+                or "YouTube Subscriber"
+            )
+            total_subscribers = _safe_int(entry.get("count") or entry.get("amount"))
+            channel_id = entry.get("channel_id")
+            _emit_subscriber(
+                str(author),
+                total_subscribers,
+                channel_id,
+                raw=entry,
+                platform="youtube",
+            )
             continue
 
-        author = (
-            entry.get("name")
-            or entry.get("display_name")
-            or entry.get("from")
-            or "YouTube Subscriber"
-        )
-        total_subscribers = _safe_int(entry.get("count") or entry.get("amount"))
-        channel_id = entry.get("channel_id")
-        _emit_subscriber(str(author), total_subscribers, channel_id, raw=entry)
+        if event_type in {"donation", "tip"}:
+            author = (
+                entry.get("name")
+                or entry.get("display_name")
+                or entry.get("from")
+                or "YouTube Supporter"
+            )
+            amount = _safe_float(entry.get("amount"))
+            currency = str(entry.get("currency") or "").upper() or None
+            formatted_amount = entry.get("formatted_amount") or entry.get("amount_display")
+            message_text = (
+                entry.get("message")
+                or entry.get("comment")
+                or entry.get("body")
+                or entry.get("note")
+            )
+            _emit_donation(
+                str(author),
+                amount,
+                currency,
+                message_text,
+                formatted_amount,
+                raw=entry,
+                platform="youtube",
+            )
+            continue
 
 
 def _run_streamlabs_listener(token: str, stop_event: threading.Event) -> None:
@@ -441,7 +777,6 @@ def _run_streamlabs_listener(token: str, stop_event: threading.Event) -> None:
 
 def main() -> int:
     args = _parse_args()
-    stream_identifier = _normalize_stream_identifier(args.stream)
     stop_event = threading.Event()
 
     http_thread: Optional[threading.Thread] = None
@@ -457,35 +792,67 @@ def main() -> int:
 
     streamlabs_thread: Optional[threading.Thread] = None
     token = args.streamlabs_token or os.environ.get("STREAMLABS_SOCKET_TOKEN")
-    if token:
+    if args.platform == "youtube" and token:
         streamlabs_thread = threading.Thread(
             target=_run_streamlabs_listener, args=(token, stop_event), daemon=True
         )
         streamlabs_thread.start()
+    elif args.platform != "youtube" and token:
+        _emit_log(
+            "Streamlabs integration is only available for YouTube streams",
+            level="info",
+            platform=args.platform,
+        )
 
+    exit_code = 0
     try:
-        try:
-            _run_with_pytchat(stream_identifier, stop_event)
-        except ModuleNotFoundError:
-            _emit_log(
-                "pytchat not installed; using placeholder output",
-                level="warning",
-                streamIdentifier=stream_identifier,
+        if args.platform == "youtube":
+            stream_identifier = _normalize_stream_identifier(args.stream)
+            try:
+                _run_with_pytchat(stream_identifier, stop_event)
+            except ModuleNotFoundError:
+                _emit_log(
+                    "pytchat not installed; using placeholder output",
+                    level="warning",
+                    streamIdentifier=stream_identifier,
+                    platform="youtube",
+                )
+                _run_placeholder(
+                    stream_identifier,
+                    args.interval,
+                    stop_event,
+                    platform="youtube",
+                    author="YouTube",
+                )
+            except YouTubeStreamUnavailableError as exc:
+                _emit_log(
+                    "Unable to reach YouTube chat; using placeholder output",
+                    level="warning",
+                    streamIdentifier=stream_identifier,
+                    error=str(exc),
+                    platform="youtube",
+                )
+                _run_placeholder(
+                    stream_identifier,
+                    args.interval,
+                    stop_event,
+                    platform="youtube",
+                    author="YouTube",
+                )
+        else:
+            exit_code = _run_tiktok_listener(
+                args.tiktok_username,
+                args.tiktok_room_id,
+                args.tiktok_session_id,
+                args.tiktok_ms_token,
+                args.interval,
+                stop_event,
             )
-            _run_placeholder(stream_identifier, args.interval, stop_event)
-        except YouTubeStreamUnavailableError as exc:
-            _emit_log(
-                "Unable to reach YouTube chat; using placeholder output",
-                level="warning",
-                streamIdentifier=stream_identifier,
-                error=str(exc),
-            )
-            _run_placeholder(stream_identifier, args.interval, stop_event)
     except KeyboardInterrupt:
-        return 0
+        exit_code = 0
     except Exception as exc:  # pragma: no cover - defensive logging
         _emit_error("Unhandled listener error", error=str(exc))
-        return 1
+        exit_code = 1
     finally:
         stop_event.set()
         if streamlabs_thread is not None:
@@ -493,7 +860,7 @@ def main() -> int:
         if http_thread is not None:
             http_thread.join(timeout=5.0)
 
-    return 0
+    return exit_code
 
 
 if __name__ == "__main__":
