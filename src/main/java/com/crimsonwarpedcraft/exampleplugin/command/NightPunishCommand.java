@@ -5,10 +5,12 @@ import edu.umd.cs.findbugs.annotations.SuppressFBWarnings;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.HashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Map.Entry;
+import java.util.Set;
 import java.util.UUID;
 import org.bukkit.Bukkit;
 import org.bukkit.ChatColor;
@@ -34,6 +36,7 @@ public class NightPunishCommand implements CommandExecutor, TabCompleter {
   private final Map<UUID, BukkitTask> activePunishments = new HashMap<>();
   private final Map<UUID, World> trackedWorlds = new HashMap<>();
   private final Map<World, Integer> worldNightLocks = new HashMap<>();
+  private final Map<World, Boolean> originalDaylightCycle = new HashMap<>();
   private final Map<UUID, String> lastKnownNames = new HashMap<>();
 
   /**
@@ -62,20 +65,21 @@ public class NightPunishCommand implements CommandExecutor, TabCompleter {
       return true;
     }
 
-    String subcommand = args[0].toLowerCase();
-    switch (subcommand) {
-      case "start":
-        return handleStart(sender, args);
-      case "stop":
-        return handleStop(sender, args);
-      default:
-        // Allow shorthand without explicit start keyword: /nightpunish <player> <minutes>
-        if (args.length >= 2) {
-          return handleStart(sender, new String[] {"start", args[0], args[1]});
-        }
-        sendUsage(sender, label);
-        return true;
+    String subcommand = args[0].toLowerCase(Locale.ROOT);
+    if (subcommand.equals("start")) {
+      return handleStart(sender, args);
     }
+    if (subcommand.equals("stop")) {
+      return handleStop(sender, args);
+    }
+
+    // Allow shorthand without explicit start keyword: /nightpunish <player> <minutes>
+    if (args.length >= 2) {
+      return handleStart(sender, new String[] {"start", args[0], args[1]});
+    }
+
+    sendUsage(sender, label);
+    return true;
   }
 
   private boolean handleStart(CommandSender sender, String[] args) {
@@ -260,6 +264,8 @@ public class NightPunishCommand implements CommandExecutor, TabCompleter {
     world.setTime(18000L);
     int locks = worldNightLocks.getOrDefault(world, 0);
     if (locks == 0) {
+      originalDaylightCycle.putIfAbsent(
+          world, world.getGameRuleValue(GameRule.DO_DAYLIGHT_CYCLE));
       world.setGameRule(GameRule.DO_DAYLIGHT_CYCLE, false);
     }
     worldNightLocks.put(world, locks + 1);
@@ -273,7 +279,8 @@ public class NightPunishCommand implements CommandExecutor, TabCompleter {
 
     if (locks <= 1) {
       worldNightLocks.remove(world);
-      world.setGameRule(GameRule.DO_DAYLIGHT_CYCLE, true);
+      Boolean original = originalDaylightCycle.remove(world);
+      world.setGameRule(GameRule.DO_DAYLIGHT_CYCLE, original == null || original);
     } else {
       worldNightLocks.put(world, locks - 1);
     }
@@ -288,10 +295,13 @@ public class NightPunishCommand implements CommandExecutor, TabCompleter {
     }
     activePunishments.clear();
 
-    for (World world : new ArrayList<>(worldNightLocks.keySet())) {
-      world.setGameRule(GameRule.DO_DAYLIGHT_CYCLE, true);
+    for (Entry<World, Boolean> entry : new ArrayList<>(originalDaylightCycle.entrySet())) {
+      World world = entry.getKey();
+      Boolean original = entry.getValue();
+      world.setGameRule(GameRule.DO_DAYLIGHT_CYCLE, original == null || original);
     }
     worldNightLocks.clear();
+    originalDaylightCycle.clear();
     trackedWorlds.clear();
     lastKnownNames.clear();
   }
@@ -319,7 +329,7 @@ public class NightPunishCommand implements CommandExecutor, TabCompleter {
   }
 
   private List<String> filterSuggestions(String input, List<String> options) {
-    String lower = input.toLowerCase();
+    String lower = input.toLowerCase(Locale.ROOT);
     List<String> matches = new ArrayList<>();
     for (String option : options) {
       if (option.startsWith(lower)) {
@@ -330,14 +340,14 @@ public class NightPunishCommand implements CommandExecutor, TabCompleter {
   }
 
   private List<String> filterPlayerNames(String prefix, Iterable<UUID> includeOnly) {
-    String lower = prefix.toLowerCase();
-    List<String> matches = new ArrayList<>();
+    String lower = prefix.toLowerCase(Locale.ROOT);
+    Set<String> matches = new LinkedHashSet<>();
     for (Player player : Bukkit.getOnlinePlayers()) {
       if (includeOnly != null && !containsUuid(includeOnly, player.getUniqueId())) {
         continue;
       }
       String name = player.getName();
-      if (name.toLowerCase().startsWith(lower)) {
+      if (name.toLowerCase(Locale.ROOT).startsWith(lower)) {
         matches.add(name);
       }
     }
@@ -349,16 +359,18 @@ public class NightPunishCommand implements CommandExecutor, TabCompleter {
         }
         String name = entry.getValue();
         if (name != null
-            && name.toLowerCase(Locale.ROOT).startsWith(lower)
-            && !matches.contains(name)) {
+            && name.toLowerCase(Locale.ROOT).startsWith(lower)) {
           matches.add(name);
         }
       }
     }
-    return matches;
+    return new ArrayList<>(matches);
   }
 
   private boolean containsUuid(Iterable<UUID> uuids, UUID candidate) {
+    if (uuids instanceof java.util.Collection<?>) {
+      return ((java.util.Collection<?>) uuids).contains(candidate);
+    }
     for (UUID uuid : uuids) {
       if (uuid.equals(candidate)) {
         return true;
