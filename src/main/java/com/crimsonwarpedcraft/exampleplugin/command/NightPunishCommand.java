@@ -12,8 +12,11 @@ import java.util.Map;
 import java.util.Map.Entry;
 import java.util.Set;
 import java.util.UUID;
+import net.kyori.adventure.text.Component;
+import net.kyori.adventure.text.minimessage.MiniMessage;
+import net.kyori.adventure.text.minimessage.tag.resolver.Placeholder;
+import net.kyori.adventure.text.minimessage.tag.resolver.TagResolver;
 import org.bukkit.Bukkit;
-import org.bukkit.ChatColor;
 import org.bukkit.GameRule;
 import org.bukkit.World;
 import org.bukkit.command.Command;
@@ -33,6 +36,7 @@ public class NightPunishCommand implements CommandExecutor, TabCompleter {
   private static final int TICKS_PER_MINUTE = 60 * 20;
 
   private final ExamplePlugin plugin;
+  private final MiniMessage miniMessage = MiniMessage.miniMessage();
   private final Map<UUID, BukkitTask> activePunishments = new HashMap<>();
   private final Map<UUID, World> trackedWorlds = new HashMap<>();
   private final Map<World, Integer> worldNightLocks = new HashMap<>();
@@ -56,7 +60,7 @@ public class NightPunishCommand implements CommandExecutor, TabCompleter {
       @NotNull String label,
       String[] args) {
     if (!sender.hasPermission("example.nightpunish.use")) {
-      sender.sendMessage(ChatColor.RED + "You do not have permission to use this command.");
+      sendMessage(sender, "<red>You do not have permission to use this command.</red>");
       return true;
     }
 
@@ -84,19 +88,16 @@ public class NightPunishCommand implements CommandExecutor, TabCompleter {
 
   private boolean handleStart(CommandSender sender, String[] args) {
     if (args.length < 3) {
-      sender.sendMessage(ChatColor.RED + "Usage: /nightpunish start <player> <minutes>");
+      sendMessage(sender, "<red>Usage: /nightpunish start <player> <minutes></red>");
       return true;
     }
 
     Player target = Bukkit.getPlayerExact(args[1]);
     if (target == null) {
-      sender.sendMessage(
-          ChatColor.RED
-              + "Player "
-              + ChatColor.YELLOW
-              + args[1]
-              + ChatColor.RED
-              + " is not online.");
+      sendMessage(
+          sender,
+          "<red>Player <yellow><target></yellow> is not online.</red>",
+          Placeholder.unparsed("target", args[1]));
       return true;
     }
 
@@ -104,24 +105,22 @@ public class NightPunishCommand implements CommandExecutor, TabCompleter {
     try {
       minutes = Double.parseDouble(args[2]);
     } catch (NumberFormatException ex) {
-      sender.sendMessage(ChatColor.RED + "Minutes must be a positive number.");
+      sendMessage(sender, "<red>Minutes must be a positive number.</red>");
       return true;
     }
 
     if (minutes <= 0) {
-      sender.sendMessage(ChatColor.RED + "Minutes must be greater than zero.");
+      sendMessage(sender, "<red>Minutes must be greater than zero.</red>");
       return true;
     }
 
     UUID targetId = target.getUniqueId();
     if (activePunishments.containsKey(targetId)) {
-      sender.sendMessage(
-          ChatColor.RED
-              + "A punishment task already exists for "
-              + ChatColor.YELLOW
-              + target.getName()
-              + ChatColor.RED
-              + ". Use /nightpunish stop to cancel it.");
+      sendMessage(
+          sender,
+          "<red>A punishment task already exists for <yellow><target></yellow>."
+              + " Use /nightpunish stop to cancel it.</red>",
+          Placeholder.unparsed("target", target.getName()));
       return true;
     }
 
@@ -158,40 +157,32 @@ public class NightPunishCommand implements CommandExecutor, TabCompleter {
 
             onlineTarget.setHealth(0.0);
             onlineTarget.sendMessage(
-                ChatColor.DARK_PURPLE
-                    + "The night claims you again. Survive until daylight to break the curse!"
-                    + ChatColor.GRAY
-                    + " (Cast by "
-                    + (sender instanceof Player ? ((Player) sender).getDisplayName() : "the void")
-                    + ChatColor.GRAY
-                    + ")");
+                miniMessage.deserialize(
+                    "<dark_purple>The night claims you again. Survive until daylight to break the"
+                        + " curse!</dark_purple><gray> (Cast by <caster></gray>)",
+                    TagResolver.resolver(Placeholder.component("caster", casterDisplay(sender)))));
           }
         }.runTaskTimer(plugin, intervalTicks, intervalTicks);
 
     activePunishments.put(targetId, task);
 
-    sender.sendMessage(
-        ChatColor.GREEN
-            + "Night punishment started for "
-            + ChatColor.YELLOW
-            + target.getName()
-            + ChatColor.GREEN
-            + " every "
-            + ChatColor.YELLOW
-            + minutes
-            + ChatColor.GREEN
-            + " minutes.");
-    target.sendMessage(
-        ChatColor.DARK_RED
-            + "An eerie chill locks the world in eternal night. You will fall every "
-            + minutes
-            + " minutes until the curse is lifted!");
+    sendMessage(
+        sender,
+        "<green>Night punishment started for <yellow><target></yellow> <green>every"
+            + " <yellow><minutes></yellow> <green>minutes.</green>",
+        Placeholder.unparsed("target", target.getName()),
+        Placeholder.unparsed("minutes", formatMinutes(minutes)));
+    sendMessage(
+        target,
+        "<dark_red>An eerie chill locks the world in eternal night. You will fall every"
+            + " <minutes> minutes until the curse is lifted!</dark_red>",
+        Placeholder.unparsed("minutes", formatMinutes(minutes)));
     return true;
   }
 
   private boolean handleStop(CommandSender sender, String[] args) {
     if (args.length < 2) {
-      sender.sendMessage(ChatColor.RED + "Usage: /nightpunish stop <player>");
+      sendMessage(sender, "<red>Usage: /nightpunish stop <player></red>");
       return true;
     }
 
@@ -199,13 +190,10 @@ public class NightPunishCommand implements CommandExecutor, TabCompleter {
     UUID targetId = target != null ? target.getUniqueId() : findTargetId(args[1]);
 
     if (targetId == null || !activePunishments.containsKey(targetId)) {
-      sender.sendMessage(
-          ChatColor.RED
-              + "No active punishment for "
-              + ChatColor.YELLOW
-              + args[1]
-              + ChatColor.RED
-              + ".");
+      sendMessage(
+          sender,
+          "<red>No active punishment for <yellow><target></yellow>.</red>",
+          Placeholder.unparsed("target", args[1]));
       return true;
     }
 
@@ -214,29 +202,22 @@ public class NightPunishCommand implements CommandExecutor, TabCompleter {
 
     cancelPunishment(targetId, true);
 
-    sender.sendMessage(
-        ChatColor.GREEN
-            + "Night punishment removed for "
-            + ChatColor.YELLOW
-            + displayName
-            + ChatColor.GREEN
-            + ".");
+    sendMessage(
+        sender,
+        "<green>Night punishment removed for <yellow><target></yellow>.</green>",
+        Placeholder.unparsed("target", displayName));
     if (target != null && target.isOnline()) {
-      target.sendMessage(ChatColor.GREEN + "The night curse fades and daylight may return.");
+      sendMessage(target, "<green>The night curse fades and daylight may return.</green>");
     }
     return true;
   }
 
   private void sendUsage(CommandSender sender, String label) {
-    sender.sendMessage(
-        ChatColor.RED
-            + "Usage: /"
-            + label
-            + " start <player> <minutes>"
-            + ChatColor.GRAY
-            + " or /"
-            + label
-            + " stop <player>");
+    sendMessage(
+        sender,
+        "<red>Usage:</red> /<label> start <player> <minutes> <gray>or</gray>"
+            + " /<label> stop <player>",
+        Placeholder.unparsed("label", label));
   }
 
   private void cancelPunishment(UUID targetId, boolean explicit) {
@@ -255,7 +236,7 @@ public class NightPunishCommand implements CommandExecutor, TabCompleter {
     if (!explicit) {
       Player target = Bukkit.getPlayer(targetId);
       if (target != null) {
-        target.sendMessage(ChatColor.GREEN + "The night curse lifts as you leave the realm.");
+        sendMessage(target, "<green>The night curse lifts as you leave the realm.</green>");
       }
     }
   }
@@ -396,5 +377,23 @@ public class NightPunishCommand implements CommandExecutor, TabCompleter {
       }
     }
     return null;
+  }
+
+  private void sendMessage(CommandSender recipient, String template, TagResolver... resolvers) {
+    recipient.sendMessage(miniMessage.deserialize(template, TagResolver.resolver(resolvers)));
+  }
+
+  private Component casterDisplay(CommandSender sender) {
+    if (sender instanceof Player player) {
+      return player.displayName();
+    }
+    return Component.text("the void");
+  }
+
+  private String formatMinutes(double minutes) {
+    if (minutes == (long) minutes) {
+      return Long.toString((long) minutes);
+    }
+    return Double.toString(minutes);
   }
 }
