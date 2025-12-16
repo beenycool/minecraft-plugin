@@ -267,8 +267,18 @@ public class ExamplePlugin extends JavaPlugin {
 
     final String listenerUrl = settings.listenerUrl();
     boolean useExternalListener = listenerUrl != null && !listenerUrl.isBlank();
+    boolean localListenerEnabled = settings.localListenerEnabled();
 
     String streamIdentifier = settings.streamIdentifier();
+    if (!useExternalListener && !localListenerEnabled) {
+      String warning =
+          "Local "
+              + platform.displayName()
+              + " listener is disabled and no external listener URL is configured; skipping listener start.";
+      getLogger().warning(warning);
+      stopListenerProcessAsync(process, null);
+      return;
+    }
     if (!useExternalListener && (streamIdentifier == null || streamIdentifier.isBlank())) {
       String warning =
           "No "
@@ -409,6 +419,15 @@ public class ExamplePlugin extends JavaPlugin {
   }
 
   private void ensureListenerScriptAvailable(StreamPlatform platform) {
+    ListenerSettings settings = getListenerSettings(platform);
+    if (settings != null) {
+      String listenerUrl = settings.listenerUrl();
+      boolean useExternalListener = listenerUrl != null && !listenerUrl.isBlank();
+      if (!settings.localListenerEnabled() || useExternalListener) {
+        return;
+      }
+    }
+
     String configuredPath = listenerScriptPaths.get(platform);
     if (configuredPath == null || configuredPath.isBlank()) {
       configuredPath = DEFAULT_LISTENER_SCRIPT;
@@ -1528,6 +1547,7 @@ public class ExamplePlugin extends JavaPlugin {
     String listenerUrl = youtubeListenerSettings.listenerUrl();
     boolean usingExternal = listenerUrl != null && !listenerUrl.isBlank();
     String streamIdentifier = youtubeListenerSettings.streamIdentifier();
+    boolean localListenerEnabled = youtubeListenerSettings.localListenerEnabled();
 
     if (usingExternal) {
       messages.add(
@@ -1538,6 +1558,14 @@ public class ExamplePlugin extends JavaPlugin {
               + ChatColor.GREEN
               + ".");
       return true;
+    }
+
+    if (!localListenerEnabled) {
+      messages.add(
+          ChatColor.RED
+              + "Local listener is disabled and no external listener URL is configured. "
+              + "Set youtube.listener-url (or re-enable youtube.local-listener-enabled).");
+      return false;
     }
 
     if (streamIdentifier == null || streamIdentifier.isBlank()) {
@@ -1715,7 +1743,8 @@ public class ExamplePlugin extends JavaPlugin {
       String listenerScript,
       String listenerUrl,
       String streamlabsSocketToken,
-      String listenerControlToken) {
+      String listenerControlToken,
+      boolean localListenerEnabled) {
 
     static ListenerSettings from(FileConfiguration config, String sectionKey) {
       ConfigurationSection root = config.getConfigurationSection(sectionKey);
@@ -1769,6 +1798,7 @@ public class ExamplePlugin extends JavaPlugin {
               : Optional.ofNullable(root.getString("listener-control-token"))
                   .map(String::trim)
                   .orElse("");
+      boolean localListenerEnabled = root.getBoolean("local-listener-enabled", true);
 
       return new ListenerSettings(
           streamIdentifier,
@@ -1778,7 +1808,8 @@ public class ExamplePlugin extends JavaPlugin {
           listenerScript,
           listenerUrl,
           streamlabsSocketToken,
-          listenerControlToken);
+          listenerControlToken,
+          localListenerEnabled);
     }
   }
 

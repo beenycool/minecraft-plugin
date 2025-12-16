@@ -87,6 +87,7 @@ If you are polling an externally hosted listener (`youtube.listener-url`), the p
 to push the new identifier to `POST /control/stream` on that listener. Set `LISTENER_CONTROL_TOKEN`
 on the listener (or pass `--control-token`) and mirror the same token in
 `youtube.listener-control-token` (or in the Minecraft server environment) to secure that endpoint.
+To force using only a remote listener, set `youtube.local-listener-enabled: false`.
 
 ### TikTok listener integration
 Alongside the YouTube bridge the plugin now supports events sourced from a TikTok listener. The new

@@ -2,6 +2,9 @@
 youtube:
   # Required YouTube live chat identifier or URL used by the external listener.
   stream-identifier: ""
+  # When false, the plugin will never spawn the bundled Python listener and will only use
+  # youtube.listener-url (remote polling).
+  local-listener-enabled: true
   # Optional player IGN to receive direct messages; kept in sync with youtube-bridge.target-player.
   target-player-ign: ""
   # Polling cadence for the Python listener (seconds, minimum of 1).
@@ -24,6 +27,7 @@ youtube:
 # Configuration for the TikTok stream integration
 tiktok:
   stream-identifier: ""
+  local-listener-enabled: true
   target-player-ign: ""
   polling-interval-seconds: 5
   python-executable: "python3"
