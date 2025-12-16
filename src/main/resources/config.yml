@@ -5,6 +5,13 @@ youtube:
   # When false, the plugin will never spawn the bundled Python listener and will only use
   # youtube.listener-url (remote polling).
   local-listener-enabled: true
+  # When true, the plugin will only run/poll the listener while at least one eligible recipient is
+  # online (someone with the monitor permission, or the configured target player). After the idle
+  # timeout elapses with nobody eligible online, the listener will be stopped until someone returns.
+  auto-monitor-when-recipients-online: false
+  # How long to wait (seconds) after the last eligible recipient was seen online before stopping
+  # the listener. Only used when auto-monitor-when-recipients-online is true.
+  idle-timeout-seconds: 300
   # Optional player IGN to receive direct messages; kept in sync with youtube-bridge.target-player.
   target-player-ign: ""
   # Polling cadence for the Python listener (seconds, minimum of 1).
@@ -28,6 +35,8 @@ youtube:
 tiktok:
   stream-identifier: ""
   local-listener-enabled: true
+  auto-monitor-when-recipients-online: false
+  idle-timeout-seconds: 300
   target-player-ign: ""
   polling-interval-seconds: 5
   python-executable: "python3"

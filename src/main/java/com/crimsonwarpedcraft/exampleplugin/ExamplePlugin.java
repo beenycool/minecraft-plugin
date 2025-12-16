@@ -123,6 +123,8 @@ public class ExamplePlugin extends JavaPlugin {
       new EnumMap<>(StreamPlatform.class);
   private final EnumMap<StreamPlatform, Long> lastCelebratedMilestones =
       new EnumMap<>(StreamPlatform.class);
+  private final EnumMap<StreamPlatform, Long> lastRecipientSeenMillis =
+      new EnumMap<>(StreamPlatform.class);
 
   // Fields for the external Python listener bridge
   private final EnumMap<StreamPlatform,
@@ -169,6 +171,7 @@ public class ExamplePlugin extends JavaPlugin {
 
     registerCommands();
     restartMonitoring();
+    startRecipientAwareMonitoring();
 
     getLogger().info("Stream bridges initialised. Awaiting events from listener processes.");
   }
@@ -199,6 +202,7 @@ public class ExamplePlugin extends JavaPlugin {
     knownSubscriberCounts.clear();
     lastCelebratedMilestones.clear();
     listenerScriptPaths.clear();
+    lastRecipientSeenMillis.clear();
   }
 
   // Methods below coordinate the YouTube bridge behaviours
@@ -268,6 +272,11 @@ public class ExamplePlugin extends JavaPlugin {
     final String listenerUrl = settings.listenerUrl();
     boolean useExternalListener = listenerUrl != null && !listenerUrl.isBlank();
     boolean localListenerEnabled = settings.localListenerEnabled();
+    boolean recipientAware = settings.autoMonitorWhenRecipientsOnline();
+    if (recipientAware && !hasMonitoringRecipients(platform, settings)) {
+      stopListenerProcessAsync(process, null);
+      return;
+    }
 
     String streamIdentifier = settings.streamIdentifier();
     if (!useExternalListener && !localListenerEnabled) {
@@ -1744,7 +1753,9 @@ public class ExamplePlugin extends JavaPlugin {
       String listenerUrl,
       String streamlabsSocketToken,
       String listenerControlToken,
-      boolean localListenerEnabled) {
+      boolean localListenerEnabled,
+      boolean autoMonitorWhenRecipientsOnline,
+      int idleTimeoutSeconds) {
 
     static ListenerSettings from(FileConfiguration config, String sectionKey) {
       ConfigurationSection root = config.getConfigurationSection(sectionKey);
@@ -1799,6 +1810,9 @@ public class ExamplePlugin extends JavaPlugin {
                   .map(String::trim)
                   .orElse("");
       boolean localListenerEnabled = root.getBoolean("local-listener-enabled", true);
+      boolean autoMonitorWhenRecipientsOnline =
+          root.getBoolean("auto-monitor-when-recipients-online", false);
+      int idleTimeoutSeconds = Math.max(0, root.getInt("idle-timeout-seconds", 300));
 
       return new ListenerSettings(
           streamIdentifier,
@@ -1809,8 +1823,87 @@ public class ExamplePlugin extends JavaPlugin {
           listenerUrl,
           streamlabsSocketToken,
           listenerControlToken,
-          localListenerEnabled);
+          localListenerEnabled,
+          autoMonitorWhenRecipientsOnline,
+          idleTimeoutSeconds);
     }
+  }
+
+  private void startRecipientAwareMonitoring() {
+    new BukkitRunnable() {
+      @Override
+      public void run() {
+        if (listenerProcesses.isEmpty()) {
+          return;
+        }
+        for (StreamPlatform platform : StreamPlatform.values()) {
+          updateRecipientAwareMonitoring(platform);
+        }
+      }
+    }.runTaskTimer(this, 20L, 20L * 30L);
+  }
+
+  private void updateRecipientAwareMonitoring(StreamPlatform platform) {
+    ListenerSettings settings = getListenerSettings(platform);
+    if (settings == null || !settings.autoMonitorWhenRecipientsOnline()) {
+      return;
+    }
+
+    com.crimsonwarpedcraft.exampleplugin.service.YouTubeChatBridge process =
+        listenerProcesses.get(platform);
+    if (process == null) {
+      return;
+    }
+
+    boolean hasRecipients = hasMonitoringRecipients(platform, settings);
+    long now = System.currentTimeMillis();
+
+    if (hasRecipients) {
+      lastRecipientSeenMillis.put(platform, now);
+      if (!process.isRunning()) {
+        restartMonitoring(platform);
+      }
+      return;
+    }
+
+    long lastSeen = lastRecipientSeenMillis.getOrDefault(platform, 0L);
+    if (lastSeen == 0L) {
+      if (process.isRunning()) {
+        lastRecipientSeenMillis.put(platform, now);
+      }
+      return;
+    }
+
+    long timeoutMillis = Math.max(0L, settings.idleTimeoutSeconds()) * 1000L;
+    if (timeoutMillis <= 0L) {
+      return;
+    }
+    if (process.isRunning() && now - lastSeen >= timeoutMillis) {
+      stopListenerProcessAsync(process, null);
+    }
+  }
+
+  private boolean hasMonitoringRecipients(StreamPlatform platform, ListenerSettings settings) {
+    if (platform == null || settings == null) {
+      return false;
+    }
+
+    String permission = platform.monitorPermission();
+
+    String configuredTarget = settings.targetIgn();
+    BridgeSettings bridge = getBridgeSettings(platform);
+    if ((configuredTarget == null || configuredTarget.isBlank()) && bridge != null) {
+      configuredTarget = bridge.targetPlayer();
+    }
+
+    if (configuredTarget != null && !configuredTarget.isBlank()) {
+      Player player = Bukkit.getPlayerExact(configuredTarget);
+      if (player != null && player.isOnline() && player.hasPermission(permission)) {
+        return true;
+      }
+    }
+
+    return Bukkit.getOnlinePlayers().stream().anyMatch(player -> player.hasPermission(permission));
   }
 
   /**

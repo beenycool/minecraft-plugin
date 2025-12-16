@@ -88,6 +88,9 @@ to push the new identifier to `POST /control/stream` on that listener. Set `LIST
 on the listener (or pass `--control-token`) and mirror the same token in
 `youtube.listener-control-token` (or in the Minecraft server environment) to secure that endpoint.
 To force using only a remote listener, set `youtube.local-listener-enabled: false`.
+To let the plugin automatically stop the listener during downtime (no eligible recipients online)
+and restart it when someone returns, set `youtube.auto-monitor-when-recipients-online: true` and
+adjust `youtube.idle-timeout-seconds`.
 
 ### TikTok listener integration
 Alongside the YouTube bridge the plugin now supports events sourced from a TikTok listener. The new
