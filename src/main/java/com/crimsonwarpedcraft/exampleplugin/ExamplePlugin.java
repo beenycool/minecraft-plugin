@@ -20,10 +20,15 @@ import io.papermc.lib.PaperLib;
 import java.io.File;
 import java.io.IOException;
 import java.io.InputStream;
+import java.net.URI;
+import java.net.http.HttpClient;
+import java.net.http.HttpRequest;
+import java.net.http.HttpResponse;
 import java.nio.file.Files;
 import java.nio.file.InvalidPathException;
 import java.nio.file.Path;
 import java.security.SecureRandom;
+import java.time.Duration;
 import java.time.Instant;
 import java.time.format.DateTimeParseException;
 import java.util.ArrayList;
@@ -43,6 +48,7 @@ import org.bukkit.ChatColor;
 import org.bukkit.Location;
 import org.bukkit.Sound;
 import org.bukkit.World;
+import org.bukkit.command.CommandSender;
 import org.bukkit.command.PluginCommand;
 import org.bukkit.configuration.ConfigurationSection;
 import org.bukkit.configuration.file.FileConfiguration;
@@ -1708,7 +1714,8 @@ public class ExamplePlugin extends JavaPlugin {
       String pythonExecutable,
       String listenerScript,
       String listenerUrl,
-      String streamlabsSocketToken) {
+      String streamlabsSocketToken,
+      String listenerControlToken) {
 
     static ListenerSettings from(FileConfiguration config, String sectionKey) {
       ConfigurationSection root = config.getConfigurationSection(sectionKey);
@@ -1751,6 +1758,17 @@ public class ExamplePlugin extends JavaPlugin {
               : Optional.ofNullable(root.getString("streamlabs-socket-token"))
                   .map(String::trim)
                   .orElse("");
+      String environmentControlToken =
+          Optional.ofNullable(System.getenv("LISTENER_CONTROL_TOKEN"))
+              .map(String::trim)
+              .filter(value -> !value.isEmpty())
+              .orElse(null);
+      String listenerControlToken =
+          environmentControlToken != null
+              ? environmentControlToken
+              : Optional.ofNullable(root.getString("listener-control-token"))
+                  .map(String::trim)
+                  .orElse("");
 
       return new ListenerSettings(
           streamIdentifier,
@@ -1759,8 +1777,163 @@ public class ExamplePlugin extends JavaPlugin {
           pythonExecutable,
           listenerScript,
           listenerUrl,
-          streamlabsSocketToken);
+          streamlabsSocketToken,
+          listenerControlToken);
     }
+  }
+
+  /**
+   * Pushes the supplied YouTube stream identifier to an externally hosted listener (when
+   * {@code youtube.listener-url} is configured and the listener exposes a control endpoint).
+   */
+  public void pushYouTubeStreamIdentifierToExternalListenerAsync(
+      CommandSender sender, String streamIdentifier) {
+    ListenerSettings settings = youtubeListenerSettings;
+    if (settings == null) {
+      return;
+    }
+    String listenerUrl = settings.listenerUrl();
+    if (listenerUrl == null || listenerUrl.isBlank()) {
+      return;
+    }
+
+    URI endpoint;
+    try {
+      endpoint = computeListenerControlEndpoint(listenerUrl);
+    } catch (IllegalArgumentException ex) {
+      getLogger().log(Level.WARNING, "Invalid listener URL configured: {0}", listenerUrl);
+      runOnMainThread(
+          () ->
+              sender.sendMessage(
+                  ChatColor.YELLOW
+                      + "Saved stream identifier, but listener URL is invalid so it was not pushed."));
+      return;
+    }
+
+    String controlToken = settings.listenerControlToken();
+    String payload = "{\"stream\":\"" + escapeJson(streamIdentifier) + "\"}";
+
+    HttpRequest.Builder request =
+        HttpRequest.newBuilder()
+            .uri(endpoint)
+            .timeout(Duration.ofSeconds(5))
+            .header("Content-Type", "application/json")
+            .POST(HttpRequest.BodyPublishers.ofString(payload));
+    if (controlToken != null && !controlToken.isBlank()) {
+      request.header("Authorization", "Bearer " + controlToken.trim());
+    }
+
+    HttpClient client = HttpClient.newBuilder().connectTimeout(Duration.ofSeconds(3)).build();
+    try {
+      client
+          .sendAsync(request.build(), HttpResponse.BodyHandlers.ofString())
+          .whenComplete(
+              (response, error) -> {
+                if (error != null) {
+                  getLogger()
+                      .log(
+                          Level.WARNING,
+                          "Failed to push stream identifier to external listener",
+                          error);
+                  runOnMainThread(
+                      () ->
+                          sender.sendMessage(
+                              ChatColor.YELLOW
+                                  + "Saved stream identifier, but failed to reach the external listener."));
+                  return;
+                }
+
+                int status = response.statusCode();
+                if (status >= 200 && status < 300) {
+                  runOnMainThread(
+                      () ->
+                          sender.sendMessage(
+                              ChatColor.GREEN
+                                  + "External listener updated to use the new stream identifier."));
+                } else {
+                  String body = response.body();
+                  getLogger()
+                      .log(
+                          Level.WARNING,
+                          "Listener control endpoint returned {0}: {1}",
+                          new Object[] {status, body});
+                  runOnMainThread(
+                      () ->
+                          sender.sendMessage(
+                              ChatColor.YELLOW
+                                  + "Saved stream identifier, but the external listener rejected the update (HTTP "
+                                  + status
+                                  + ")."));
+                }
+              });
+    } catch (IllegalArgumentException ex) {
+      getLogger().log(Level.WARNING, "Failed to build request to listener control endpoint", ex);
+    }
+  }
+
+  private URI computeListenerControlEndpoint(String listenerUrl) {
+    URI uri = URI.create(listenerUrl.trim());
+    String path = uri.getPath();
+    if (path == null || path.isBlank()) {
+      path = "/";
+    }
+
+    String basePath = path;
+    if (basePath.endsWith("/events")) {
+      basePath = basePath.substring(0, basePath.length() - "/events".length());
+    }
+    while (basePath.endsWith("/") && basePath.length() > 1) {
+      basePath = basePath.substring(0, basePath.length() - 1);
+    }
+
+    String controlPath =
+        ("/".equals(basePath) ? "" : basePath) + "/control/stream";
+    if (controlPath.isEmpty()) {
+      controlPath = "/control/stream";
+    }
+
+    try {
+      return new URI(
+          uri.getScheme(),
+          uri.getUserInfo(),
+          uri.getHost(),
+          uri.getPort(),
+          controlPath,
+          null,
+          null);
+    } catch (Exception ex) {
+      throw new IllegalArgumentException("Unable to derive listener control endpoint from " + uri, ex);
+    }
+  }
+
+  private String escapeJson(String value) {
+    if (value == null) {
+      return "";
+    }
+    StringBuilder builder = new StringBuilder(value.length());
+    for (int i = 0; i < value.length(); i++) {
+      char c = value.charAt(i);
+      switch (c) {
+        case '\\':
+          builder.append("\\\\");
+          break;
+        case '"':
+          builder.append("\\\"");
+          break;
+        case '\n':
+          builder.append("\\n");
+          break;
+        case '\r':
+          builder.append("\\r");
+          break;
+        case '\t':
+          builder.append("\\t");
+          break;
+        default:
+          builder.append(c);
+      }
+    }
+    return builder.toString();
   }
 
   private record BridgeSettings(

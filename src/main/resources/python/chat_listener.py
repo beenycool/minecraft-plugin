@@ -28,9 +28,27 @@ MAX_HTTP_QUEUE = 10000  # prevent unbounded growth if clients stop polling
 EVENT_QUEUE: "Queue[str]" = Queue(maxsize=MAX_HTTP_QUEUE)
 HTTP_PUBLISH_ENABLED = False
 
+MAX_CONTROL_BODY_BYTES = 8192
+
 
 class YouTubeStreamUnavailableError(RuntimeError):
     """Raised when a YouTube stream cannot be reached or initialized."""
+
+
+class StreamState:
+    def __init__(self, stream_identifier: str) -> None:
+        self._lock = threading.Lock()
+        self._stream_identifier = stream_identifier
+        self.restart_event = threading.Event()
+
+    def get(self) -> str:
+        with self._lock:
+            return self._stream_identifier
+
+    def set(self, stream_identifier: str) -> None:
+        with self._lock:
+            self._stream_identifier = stream_identifier
+        self.restart_event.set()
 
 
 def _parse_args() -> argparse.Namespace:
@@ -92,6 +110,14 @@ def _parse_args() -> argparse.Namespace:
         "--tiktok-ms-token",
         dest="tiktok_ms_token",
         help="Optional TikTok msToken cookie for authenticated access",
+    )
+    parser.add_argument(
+        "--control-token",
+        dest="control_token",
+        help=(
+            "Optional token that must be supplied as 'Authorization: Bearer <token>' "
+            "when calling the /control/stream endpoint"
+        ),
     )
 
     args = parser.parse_args()
@@ -165,18 +191,47 @@ def _normalize_http_path(prefix: str) -> str:
 
 
 def _start_http_server(
-    endpoint: str, stop_event: threading.Event, path_prefix: str
+    endpoint: str,
+    stop_event: threading.Event,
+    path_prefix: str,
+    stream_state: Optional[StreamState],
+    control_token: Optional[str],
 ) -> threading.Thread:
     global HTTP_PUBLISH_ENABLED
 
     host, port = _parse_http_endpoint(endpoint)
     normalized_prefix = _normalize_http_path(path_prefix)
-    allowed_paths = {normalized_prefix, f"{normalized_prefix}/events"}
+    base_path = normalized_prefix.rstrip("/") if normalized_prefix != "/" else ""
+    events_path = f"{base_path}/events" if base_path else "/events"
+    control_path = f"{base_path}/control/stream" if base_path else "/control/stream"
+    allowed_paths = {normalized_prefix, events_path}
     if normalized_prefix == "/":
         allowed_paths.add("/events")
 
     class _PollingHandler(http.server.BaseHTTPRequestHandler):
         server_version = "ChatRelay/1.0"
+
+        def _check_control_token(self) -> bool:
+            if not control_token:
+                return True
+            auth = self.headers.get("Authorization", "")
+            if auth.startswith("Bearer "):
+                provided = auth[len("Bearer ") :].strip()
+            else:
+                provided = auth.strip()
+            return provided == control_token
+
+        def _send_json(self, status: int, payload: Dict[str, Any]) -> None:
+            data = json.dumps(payload, ensure_ascii=False).encode("utf-8")
+            self.send_response(status)
+            self.send_header("Content-Type", "application/json; charset=utf-8")
+            self.send_header("Cache-Control", "no-store")
+            self.send_header("Content-Length", str(len(data)))
+            self.end_headers()
+            try:
+                self.wfile.write(data)
+            except BrokenPipeError:  # pragma: no cover - depends on client
+                pass
 
         def do_GET(self) -> None:  # pragma: no cover - network integration
             path = urlparse(self.path).path
@@ -214,6 +269,63 @@ def _start_http_server(
                 self.wfile.write(data)
             except BrokenPipeError:  # pragma: no cover - depends on client
                 pass
+
+        def do_POST(self) -> None:  # pragma: no cover - network integration
+            path = urlparse(self.path).path
+            if path != control_path:
+                self.send_error(404, "Not Found")
+                return
+
+            if stream_state is None:
+                self._send_json(409, {"ok": False, "error": "Stream control unavailable"})
+                return
+
+            if not self._check_control_token():
+                self.send_error(401, "Unauthorized")
+                return
+
+            length_header = self.headers.get("Content-Length")
+            try:
+                length = int(length_header) if length_header else 0
+            except ValueError:
+                self.send_error(400, "Invalid Content-Length")
+                return
+
+            if length <= 0:
+                self.send_error(400, "Missing request body")
+                return
+            if length > MAX_CONTROL_BODY_BYTES:
+                self.send_error(413, "Request body too large")
+                return
+
+            try:
+                raw = self.rfile.read(length)
+            except Exception as exc:
+                self.send_error(400, f"Failed to read body: {exc}")
+                return
+
+            body = raw.decode("utf-8", errors="replace").strip()
+            stream_value: Optional[str] = None
+            if body:
+                try:
+                    payload = json.loads(body)
+                    if isinstance(payload, dict):
+                        stream_value = payload.get("stream") or payload.get("streamIdentifier")
+                except json.JSONDecodeError:
+                    stream_value = body
+
+            if not stream_value or not str(stream_value).strip():
+                self._send_json(400, {"ok": False, "error": "Missing stream identifier"})
+                return
+
+            normalized = _normalize_stream_identifier(str(stream_value).strip())
+            stream_state.set(normalized)
+            _emit_log(
+                "Stream identifier updated via control endpoint",
+                streamIdentifier=normalized,
+                platform="youtube",
+            )
+            self._send_json(200, {"ok": True, "streamIdentifier": normalized})
 
         def do_HEAD(self) -> None:  # pragma: no cover - network integration
             path = urlparse(self.path).path
@@ -260,12 +372,19 @@ def _start_http_server(
 
     HTTP_PUBLISH_ENABLED = True
     base_url = f"http://{host}:{port}{normalized_prefix}"
-    events_path = f"{normalized_prefix.rstrip('/')}/events" if normalized_prefix != "/" else "/events"
+    if stream_state is not None and not control_token:
+        _emit_log(
+            "Listener control endpoint is enabled without a token; set LISTENER_CONTROL_TOKEN "
+            "or pass --control-token to require authorization.",
+            level="warning",
+            platform="youtube",
+        )
     _emit_log(
         "HTTP polling endpoint started",
         level="info",
         url=f"{base_url.rstrip('/') or base_url}",
         eventsUrl=f"http://{host}:{port}{events_path}",
+        controlUrl=f"http://{host}:{port}{control_path}",
     )
     return thread
 
@@ -398,7 +517,11 @@ def _emit_donation(
     _emit_json(payload)
 
 
-def _run_with_pytchat(stream_identifier: str, stop_event: threading.Event) -> None:
+def _run_with_pytchat(
+    stream_identifier: str,
+    stop_event: threading.Event,
+    restart_event: Optional[threading.Event] = None,
+) -> None:
     import pytchat
 
     try:
@@ -408,6 +531,8 @@ def _run_with_pytchat(stream_identifier: str, stop_event: threading.Event) -> No
 
     try:
         while not stop_event.is_set() and chat.is_alive():
+            if restart_event is not None and restart_event.is_set():
+                break
             for item in chat.get().items:
                 author = getattr(item.author, "name", "YouTube")
                 channel_id = getattr(item.author, "channelId", None)
@@ -430,12 +555,15 @@ def _run_placeholder(
     stream_identifier: str,
     interval: int,
     stop_event: threading.Event,
+    restart_event: Optional[threading.Event] = None,
     *,
     platform: str,
     author: str,
 ) -> None:
     _emit_chat(author, f"Simulated relay for {stream_identifier}", platform=platform)
     while not stop_event.is_set():
+        if restart_event is not None and restart_event.is_set():
+            break
         time.sleep(interval)
         _emit_log(
             "Heartbeat",
@@ -778,12 +906,20 @@ def _run_streamlabs_listener(token: str, stop_event: threading.Event) -> None:
 def main() -> int:
     args = _parse_args()
     stop_event = threading.Event()
+    stream_state: Optional[StreamState] = None
+    if args.platform == "youtube":
+        stream_state = StreamState(_normalize_stream_identifier(args.stream or ""))
 
     http_thread: Optional[threading.Thread] = None
     if args.http_endpoint:
+        control_token = args.control_token or os.environ.get("LISTENER_CONTROL_TOKEN")
         try:
             http_thread = _start_http_server(
-                args.http_endpoint, stop_event, args.http_path_prefix
+                args.http_endpoint,
+                stop_event,
+                args.http_path_prefix,
+                stream_state,
+                control_token,
             )
         except ValueError as exc:
             _emit_error("Invalid HTTP endpoint", error=str(exc))
@@ -807,38 +943,51 @@ def main() -> int:
     exit_code = 0
     try:
         if args.platform == "youtube":
-            stream_identifier = _normalize_stream_identifier(args.stream)
-            try:
-                _run_with_pytchat(stream_identifier, stop_event)
-            except ModuleNotFoundError:
-                _emit_log(
-                    "pytchat not installed; using placeholder output",
-                    level="warning",
-                    streamIdentifier=stream_identifier,
-                    platform="youtube",
-                )
-                _run_placeholder(
-                    stream_identifier,
-                    args.interval,
-                    stop_event,
-                    platform="youtube",
-                    author="YouTube",
-                )
-            except YouTubeStreamUnavailableError as exc:
-                _emit_log(
-                    "Unable to reach YouTube chat; using placeholder output",
-                    level="warning",
-                    streamIdentifier=stream_identifier,
-                    error=str(exc),
-                    platform="youtube",
-                )
-                _run_placeholder(
-                    stream_identifier,
-                    args.interval,
-                    stop_event,
-                    platform="youtube",
-                    author="YouTube",
-                )
+            if stream_state is None:
+                raise RuntimeError("YouTube stream state was not initialized")
+
+            while not stop_event.is_set():
+                current_identifier = stream_state.get()
+                stream_state.restart_event.clear()
+                try:
+                    _run_with_pytchat(
+                        current_identifier, stop_event, stream_state.restart_event
+                    )
+                except ModuleNotFoundError:
+                    _emit_log(
+                        "pytchat not installed; using placeholder output",
+                        level="warning",
+                        streamIdentifier=current_identifier,
+                        platform="youtube",
+                    )
+                    _run_placeholder(
+                        current_identifier,
+                        args.interval,
+                        stop_event,
+                        stream_state.restart_event,
+                        platform="youtube",
+                        author="YouTube",
+                    )
+                except YouTubeStreamUnavailableError as exc:
+                    _emit_log(
+                        "Unable to reach YouTube chat; using placeholder output",
+                        level="warning",
+                        streamIdentifier=current_identifier,
+                        error=str(exc),
+                        platform="youtube",
+                    )
+                    _run_placeholder(
+                        current_identifier,
+                        args.interval,
+                        stop_event,
+                        stream_state.restart_event,
+                        platform="youtube",
+                        author="YouTube",
+                    )
+
+                if stream_state.restart_event.is_set():
+                    continue
+                break
         else:
             exit_code = _run_tiktok_listener(
                 args.tiktok_username,

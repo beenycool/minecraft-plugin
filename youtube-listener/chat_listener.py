@@ -30,6 +30,8 @@ MAX_HTTP_QUEUE = 10000  # prevent unbounded growth if clients stop polling
 EVENT_QUEUE: "Queue[str]" = Queue(maxsize=MAX_HTTP_QUEUE)
 HTTP_PUBLISH_ENABLED = False
 
+MAX_CONTROL_BODY_BYTES = 8192
+
 OVERLAY_HTML_TEMPLATE = """<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -168,6 +170,22 @@ OVERLAY_HTML_TEMPLATE = """<!DOCTYPE html>
 """
 
 
+class StreamState:
+    def __init__(self, stream_identifier: str) -> None:
+        self._lock = threading.Lock()
+        self._stream_identifier = stream_identifier
+        self.restart_event = threading.Event()
+
+    def get(self) -> str:
+        with self._lock:
+            return self._stream_identifier
+
+    def set(self, stream_identifier: str) -> None:
+        with self._lock:
+            self._stream_identifier = stream_identifier
+        self.restart_event.set()
+
+
 def _parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Relay YouTube chat messages")
     parser.add_argument("--stream", required=True, help="YouTube chat ID or URL")
@@ -200,6 +218,14 @@ def _parse_args() -> argparse.Namespace:
         "--cookies",
         dest="cookies_path",
         help="Optional path to a Netscape-format cookies.txt file for authenticated access",
+    )
+    parser.add_argument(
+        "--control-token",
+        dest="control_token",
+        help=(
+            "Optional token that must be supplied as 'Authorization: Bearer <token>' "
+            "when calling the /control/stream endpoint"
+        ),
     )
     return parser.parse_args()
 
@@ -262,7 +288,11 @@ def _normalize_http_path(prefix: str) -> str:
 
 
 def _start_http_server(
-    endpoint: str, stop_event: threading.Event, path_prefix: str
+    endpoint: str,
+    stop_event: threading.Event,
+    path_prefix: str,
+    stream_state: StreamState,
+    control_token: Optional[str],
 ) -> threading.Thread:
     global HTTP_PUBLISH_ENABLED
 
@@ -271,6 +301,7 @@ def _start_http_server(
     base_path = normalized_prefix.rstrip("/") if normalized_prefix != "/" else ""
     events_path = f"{base_path}/events" if base_path else "/events"
     overlay_path = f"{base_path}/overlay" if base_path else "/overlay"
+    control_path = f"{base_path}/control/stream" if base_path else "/control/stream"
     allowed_paths = {normalized_prefix, events_path, overlay_path}
 
     def _send_overlay_headers(handler: http.server.BaseHTTPRequestHandler, include_body: bool) -> None:
@@ -291,6 +322,28 @@ def _start_http_server(
 
     class _PollingHandler(http.server.BaseHTTPRequestHandler):
         server_version = "YouTubeChatListener/1.0"
+
+        def _check_control_token(self) -> bool:
+            if not control_token:
+                return True
+            auth = self.headers.get("Authorization", "")
+            if auth.startswith("Bearer "):
+                provided = auth[len("Bearer ") :].strip()
+            else:
+                provided = auth.strip()
+            return provided == control_token
+
+        def _send_json(self, status: int, payload: Dict[str, Any]) -> None:
+            data = json.dumps(payload, ensure_ascii=False).encode("utf-8")
+            self.send_response(status)
+            self.send_header("Content-Type", "application/json; charset=utf-8")
+            self.send_header("Cache-Control", "no-store")
+            self.send_header("Content-Length", str(len(data)))
+            self.end_headers()
+            try:
+                self.wfile.write(data)
+            except BrokenPipeError:  # pragma: no cover - depends on client
+                pass
 
         def do_GET(self) -> None:  # pragma: no cover - network integration
             path = urlparse(self.path).path
@@ -332,6 +385,59 @@ def _start_http_server(
                 self.wfile.write(data)
             except BrokenPipeError:  # pragma: no cover - depends on client
                 pass
+
+        def do_POST(self) -> None:  # pragma: no cover - network integration
+            path = urlparse(self.path).path
+            if path != control_path:
+                self.send_error(404, "Not Found")
+                return
+
+            if not self._check_control_token():
+                self.send_error(401, "Unauthorized")
+                return
+
+            length_header = self.headers.get("Content-Length")
+            try:
+                length = int(length_header) if length_header else 0
+            except ValueError:
+                self.send_error(400, "Invalid Content-Length")
+                return
+
+            if length <= 0:
+                self.send_error(400, "Missing request body")
+                return
+            if length > MAX_CONTROL_BODY_BYTES:
+                self.send_error(413, "Request body too large")
+                return
+
+            try:
+                raw = self.rfile.read(length)
+            except Exception as exc:
+                self.send_error(400, f"Failed to read body: {exc}")
+                return
+
+            try:
+                body = raw.decode("utf-8", errors="replace").strip()
+            except Exception:
+                body = ""
+
+            stream_value: Optional[str] = None
+            if body:
+                try:
+                    payload = json.loads(body)
+                    if isinstance(payload, dict):
+                        stream_value = payload.get("stream") or payload.get("streamIdentifier")
+                except json.JSONDecodeError:
+                    stream_value = body
+
+            if not stream_value or not str(stream_value).strip():
+                self._send_json(400, {"ok": False, "error": "Missing stream identifier"})
+                return
+
+            normalized = _normalize_stream_identifier(str(stream_value).strip())
+            stream_state.set(normalized)
+            _emit_log("Stream identifier updated via control endpoint", streamIdentifier=normalized)
+            self._send_json(200, {"ok": True, "streamIdentifier": normalized})
 
         def do_HEAD(self) -> None:  # pragma: no cover - network integration
             path = urlparse(self.path).path
@@ -380,12 +486,19 @@ def _start_http_server(
 
     HTTP_PUBLISH_ENABLED = True
     base_url = f"http://{host}:{port}{normalized_prefix}"
+    if not control_token:
+        _emit_log(
+            "Listener control endpoint is enabled without a token; set LISTENER_CONTROL_TOKEN "
+            "or pass --control-token to require authorization.",
+            level="warning",
+        )
     _emit_log(
         "HTTP polling endpoint started",
         level="info",
         url=f"{base_url.rstrip('/') or base_url}",
         eventsUrl=f"http://{host}:{port}{events_path}",
         overlayUrl=f"http://{host}:{port}{overlay_path}",
+        controlUrl=f"http://{host}:{port}{control_path}",
     )
     return thread
 
@@ -536,6 +649,7 @@ def _run_with_pytchat(
     stream_identifier: str,
     stop_event: threading.Event,
     http_client: Optional[httpx.Client],
+    restart_event: Optional[threading.Event] = None,
 ) -> None:
     import pytchat
 
@@ -546,6 +660,8 @@ def _run_with_pytchat(
     chat = pytchat.create(video_id=stream_identifier, **create_kwargs)
     try:
         while not stop_event.is_set() and chat.is_alive():
+            if restart_event is not None and restart_event.is_set():
+                break
             for item in chat.get().items:
                 author = getattr(item.author, "name", "YouTube")
                 channel_id = getattr(item.author, "channelId", None)
@@ -693,6 +809,7 @@ def _run_streamlabs_listener(token: str, stop_event: threading.Event) -> None:
 def main() -> int:
     args = _parse_args()
     stream_identifier = _normalize_stream_identifier(args.stream)
+    stream_state = StreamState(stream_identifier)
     stop_event = threading.Event()
     cookies_path: Optional[str] = args.cookies_path or os.environ.get("YOUTUBE_COOKIES_PATH")
     if cookies_path:
@@ -713,9 +830,14 @@ def main() -> int:
 
     http_thread: Optional[threading.Thread] = None
     if args.http_endpoint:
+        control_token = args.control_token or os.environ.get("LISTENER_CONTROL_TOKEN")
         try:
             http_thread = _start_http_server(
-                args.http_endpoint, stop_event, args.http_path_prefix
+                args.http_endpoint,
+                stop_event,
+                args.http_path_prefix,
+                stream_state,
+                control_token,
             )
         except ValueError as exc:
             _emit_error("Invalid HTTP endpoint", error=str(exc))
@@ -734,7 +856,13 @@ def main() -> int:
     try:
         while not stop_event.is_set():
             try:
-                _run_with_pytchat(stream_identifier, stop_event, http_client)
+                current_identifier = stream_state.get()
+                stream_state.restart_event.clear()
+                _run_with_pytchat(
+                    current_identifier, stop_event, http_client, stream_state.restart_event
+                )
+                if stream_state.restart_event.is_set():
+                    continue
                 break
             except ModuleNotFoundError as exc:
                 _emit_error(

@@ -7,7 +7,7 @@ description: DESCRIPTION
 commands:
   ytstream:
     description: Manage the YouTube chat bridge
-    usage: "/ytstream <setchat|settarget|reload>"
+    usage: "/ytstream <setchat|settarget|reload|test>"
     aliases: [yt]
     permission: example.ytstream.use
     permission-message: "You do not have permission to manage the YouTube stream integration."

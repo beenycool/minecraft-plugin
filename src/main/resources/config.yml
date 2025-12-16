@@ -15,6 +15,9 @@ youtube:
   # separated messages (matching the stdout output of chat_listener.py). Include the full path,
   # e.g. https://example.hackclub.app/yt-listener/events when reverse proxied through Caddy.
   listener-url: ""
+  # Optional token used to authenticate control requests to the listener (POST /control/stream).
+  # Can also be supplied via LISTENER_CONTROL_TOKEN in the Minecraft server environment.
+  listener-control-token: ""
   # Optional Streamlabs Socket API token used to receive subscriber notifications.
   streamlabs-socket-token: ""
 
@@ -26,6 +29,7 @@ tiktok:
   python-executable: "python3"
   listener-script: "python/chat_listener.py"
   listener-url: ""
+  listener-control-token: ""
   streamlabs-socket-token: ""
 
 world-reset:

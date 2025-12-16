@@ -76,6 +76,7 @@ public class YouTubeIntegrationCommand implements CommandExecutor, TabCompleter 
 
     String identifier = args[1];
     updateConfigValueAndRestart("youtube.stream-identifier", identifier);
+    plugin.pushYouTubeStreamIdentifierToExternalListenerAsync(sender, identifier);
     sender.sendMessage(
         ChatColor.GREEN
             + "YouTube stream identifier set to "
