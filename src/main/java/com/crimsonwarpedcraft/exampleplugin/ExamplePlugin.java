@@ -301,7 +301,8 @@ public class ExamplePlugin extends JavaPlugin {
       String warning =
           "Local "
               + platform.displayName()
-              + " listener is disabled and no external listener URL is configured; skipping listener start.";
+              + " listener is disabled and no external listener URL is "
+              + "configured; skipping listener start.";
       getLogger().warning(warning);
       stopListenerProcessAsync(process, null);
       return;
@@ -1941,12 +1942,14 @@ public class ExamplePlugin extends JavaPlugin {
     try {
       endpoint = computeListenerControlEndpoint(listenerUrl);
     } catch (IllegalArgumentException ex) {
-      getLogger().log(Level.WARNING, "Invalid listener URL configured: {0}", listenerUrl);
+      getLogger()
+          .log(Level.WARNING, "Invalid listener URL configured: {0}", listenerUrl);
       runOnMainThread(
           () ->
               sender.sendMessage(
                   ChatColor.YELLOW
-                      + "Saved stream identifier, but listener URL is invalid so it was not pushed."));
+                      + "Saved stream identifier, but listener URL is invalid so it was not "
+                      + "pushed."));
       return;
     }
 
@@ -1963,7 +1966,8 @@ public class ExamplePlugin extends JavaPlugin {
       request.header("Authorization", "Bearer " + controlToken.trim());
     }
 
-    HttpClient client = HttpClient.newBuilder().connectTimeout(Duration.ofSeconds(3)).build();
+    HttpClient client =
+        HttpClient.newBuilder().connectTimeout(Duration.ofSeconds(3)).build();
     try {
       client
           .sendAsync(request.build(), HttpResponse.BodyHandlers.ofString())
@@ -1979,7 +1983,8 @@ public class ExamplePlugin extends JavaPlugin {
                       () ->
                           sender.sendMessage(
                               ChatColor.YELLOW
-                                  + "Saved stream identifier, but failed to reach the external listener."));
+                                  + "Saved stream identifier, but failed to reach the external "
+                                  + "listener."));
                   return;
                 }
 
@@ -2001,13 +2006,18 @@ public class ExamplePlugin extends JavaPlugin {
                       () ->
                           sender.sendMessage(
                               ChatColor.YELLOW
-                                  + "Saved stream identifier, but the external listener rejected the update (HTTP "
+                                  + "Saved stream identifier, but the external listener rejected "
+                                  + "the update (HTTP "
                                   + status
                                   + ")."));
                 }
               });
     } catch (IllegalArgumentException ex) {
-      getLogger().log(Level.WARNING, "Failed to build request to listener control endpoint", ex);
+      getLogger()
+          .log(
+              Level.WARNING,
+              "Failed to build request to listener control endpoint",
+              ex);
     }
   }
 
@@ -2042,7 +2052,8 @@ public class ExamplePlugin extends JavaPlugin {
           null,
           null);
     } catch (Exception ex) {
-      throw new IllegalArgumentException("Unable to derive listener control endpoint from " + uri, ex);
+      throw new IllegalArgumentException(
+          "Unable to derive listener control endpoint from " + uri, ex);
     }
   }
 
