@@ -282,10 +282,8 @@ public class ExamplePlugin extends JavaPlugin {
 
     String streamIdentifier = settings.streamIdentifier();
     if (!useExternalListener && (streamIdentifier == null || streamIdentifier.isBlank())) {
-      String warning =
-          "No "
-              + platform.displayName()
-              + " stream identifier configured; skipping listener start.";
+      String warning = "No " + platform.displayName()
+          + " stream identifier configured; skipping listener start.";
       getLogger().warning(warning);
       stopListenerProcessAsync(process, null);
       return;
@@ -1856,11 +1854,9 @@ public class ExamplePlugin extends JavaPlugin {
           Objects.requireNonNullElse(
               milestoneTitle.getString("subtitle"),
               "&eMilestone interval reached!");
-      final int milestoneTitleFadeIn =
-          Math.max(0, milestoneTitle.getInt("fade-in", 10));
+      final int milestoneTitleFadeIn = Math.max(0, milestoneTitle.getInt("fade-in", 10));
       final int milestoneTitleStay = Math.max(0, milestoneTitle.getInt("stay", 60));
-      final int milestoneTitleFadeOut =
-          Math.max(0, milestoneTitle.getInt("fade-out", 20));
+      final int milestoneTitleFadeOut = Math.max(0, milestoneTitle.getInt("fade-out", 20));
 
       ConfigurationSection donations = root.getConfigurationSection("donations");
       if (donations == null) {
@@ -1873,12 +1869,11 @@ public class ExamplePlugin extends JavaPlugin {
       }
       final boolean orbitalStrikeEnabled = orbitalStrike.getBoolean("enabled", true);
       final double orbitalStrikeMinAmount = orbitalStrike.getDouble("min-amount", 5.0D);
-      final String orbitalStrikeCurrency =
-          Optional.ofNullable(orbitalStrike.getString("currency"))
-              .map(String::trim)
-              .filter(value -> !value.isEmpty())
-              .map(value -> value.toUpperCase(Locale.ROOT))
-              .orElse("");
+      final String orbitalStrikeCurrency = Optional.ofNullable(orbitalStrike.getString("currency"))
+          .map(String::trim)
+          .filter(value -> !value.isEmpty())
+          .map(value -> value.toUpperCase(Locale.ROOT))
+          .orElse("");
       final int orbitalStrikeTntCount = Math.max(1, orbitalStrike.getInt("tnt-count", 100));
       final double orbitalStrikeVerticalOffset = orbitalStrike.getDouble("vertical-offset", 25.0D);
       final double orbitalStrikeRadius = Math.max(0.0D, orbitalStrike.getDouble("radius", 6.0D));
@@ -1890,14 +1885,12 @@ public class ExamplePlugin extends JavaPlugin {
       if (orbitalStrikeTitle == null) {
         orbitalStrikeTitle = orbitalStrike.createSection("title");
       }
-      final String orbitalStrikeTitleMain =
-          Objects.requireNonNullElse(
-              orbitalStrikeTitle.getString("main"),
-              "&c{donor} armed the Orbital Strike Cannon!");
-      final String orbitalStrikeTitleSubtitle =
-          Objects.requireNonNullElse(
-              orbitalStrikeTitle.getString("subtitle"),
-              "&eBrace for {tnt_count} TNT!");
+      final String orbitalStrikeTitleMain = Objects.requireNonNullElse(
+          orbitalStrikeTitle.getString("main"),
+          "&c{donor} armed the Orbital Strike Cannon!");
+      final String orbitalStrikeTitleSubtitle = Objects.requireNonNullElse(
+          orbitalStrikeTitle.getString("subtitle"),
+          "&eBrace for {tnt_count} TNT!");
       final int orbitalStrikeTitleFadeIn =
           Math.max(0, orbitalStrikeTitle.getInt("fade-in", 10));
       final int orbitalStrikeTitleStay = Math.max(0, orbitalStrikeTitle.getInt("stay", 40));
