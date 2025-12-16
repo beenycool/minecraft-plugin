@@ -12,6 +12,7 @@ ExecStart=/usr/bin/env python3 /opt/youtube-listener/chat_listener.py \
     --http-endpoint 127.0.0.1:8081 \
     --http-path-prefix /yt-listener
 # Optionally load sensitive configuration values like STREAMLABS_SOCKET_TOKEN.
+# Set LISTENER_CONTROL_TOKEN to allow the Minecraft plugin to switch streams via POST /control/stream.
 EnvironmentFile=-/etc/youtube-listener.env
 Environment=PYTHONUNBUFFERED=1
 Restart=on-failure

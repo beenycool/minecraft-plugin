@@ -2,6 +2,16 @@
 youtube:
   # Required YouTube live chat identifier or URL used by the external listener.
   stream-identifier: ""
+  # When false, the plugin will never spawn the bundled Python listener and will only use
+  # youtube.listener-url (remote polling).
+  local-listener-enabled: true
+  # When true, the plugin will only run/poll the listener while at least one eligible recipient is
+  # online (someone with the monitor permission, or the configured target player). After the idle
+  # timeout elapses with nobody eligible online, the listener will be stopped until someone returns.
+  auto-monitor-when-recipients-online: false
+  # How long to wait (seconds) after the last eligible recipient was seen online before stopping
+  # the listener. Only used when auto-monitor-when-recipients-online is true.
+  idle-timeout-seconds: 300
   # Optional player IGN to receive direct messages; kept in sync with youtube-bridge.target-player.
   target-player-ign: ""
   # Polling cadence for the Python listener (seconds, minimum of 1).
@@ -15,17 +25,24 @@ youtube:
   # separated messages (matching the stdout output of chat_listener.py). Include the full path,
   # e.g. https://example.hackclub.app/yt-listener/events when reverse proxied through Caddy.
   listener-url: ""
+  # Optional token used to authenticate control requests to the listener (POST /control/stream).
+  # Can also be supplied via LISTENER_CONTROL_TOKEN in the Minecraft server environment.
+  listener-control-token: ""
   # Optional Streamlabs Socket API token used to receive subscriber notifications.
   streamlabs-socket-token: ""
 
 # Configuration for the TikTok stream integration
 tiktok:
   stream-identifier: ""
+  local-listener-enabled: true
+  auto-monitor-when-recipients-online: false
+  idle-timeout-seconds: 300
   target-player-ign: ""
   polling-interval-seconds: 5
   python-executable: "python3"
   listener-script: "python/chat_listener.py"
   listener-url: ""
+  listener-control-token: ""
   streamlabs-socket-token: ""
 
 world-reset:

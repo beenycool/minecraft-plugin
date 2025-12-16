@@ -74,6 +74,24 @@ as `/yt-listener` and `/yt-listener/events`, which plays nicely with Caddy route
 plugin's `config.yml`, set `youtube.listener-url` to the HTTPS URL that Caddy exposes (for example
 `https://example.hackclub.app/yt-listener/events`).
 
+### YouTube listener management commands
+Once the plugin is installed you can update the YouTube stream identifier in-game:
+
+```text
+/ytstream setchat <chatId|url>
+/ytstream settarget <player>
+/ytstream reload
+```
+
+If you are polling an externally hosted listener (`youtube.listener-url`), the plugin will also try
+to push the new identifier to `POST /control/stream` on that listener. Set `LISTENER_CONTROL_TOKEN`
+on the listener (or pass `--control-token`) and mirror the same token in
+`youtube.listener-control-token` (or in the Minecraft server environment) to secure that endpoint.
+To force using only a remote listener, set `youtube.local-listener-enabled: false`.
+To let the plugin automatically stop the listener during downtime (no eligible recipients online)
+and restart it when someone returns, set `youtube.auto-monitor-when-recipients-online: true` and
+adjust `youtube.idle-timeout-seconds`.
+
 ### TikTok listener integration
 Alongside the YouTube bridge the plugin now supports events sourced from a TikTok listener. The new
 `tiktok` block in `config.yml` mirrors the existing YouTube options so you can point the bridge at a
